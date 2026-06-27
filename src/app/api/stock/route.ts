@@ -1,5 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import yahooFinance from "yahoo-finance2";
+
+const YF_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+  "Accept": "application/json",
+};
+
+async function fetchYahoo(ticker: string) {
+  const period1 = Math.floor((Date.now() - 90 * 24 * 60 * 60 * 1000) / 1000);
+  const period2 = Math.floor(Date.now() / 1000);
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&period1=${period1}&period2=${period2}&includePrePost=false`;
+  const res = await fetch(url, { headers: YF_HEADERS, next: { revalidate: 300 } });
+  if (!res.ok) throw new Error(`Yahoo Finance error: ${res.status}`);
+  return res.json();
+}
 
 export async function GET(req: NextRequest) {
   const symbol = req.nextUrl.searchParams.get("symbol");
@@ -9,46 +22,48 @@ export async function GET(req: NextRequest) {
 
   try {
     const ticker = isCrypto ? `${symbol.toUpperCase()}-USD` : symbol.toUpperCase();
+    const data = await fetchYahoo(ticker);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const [quote, historical]: [any, any] = await Promise.all([
-      yahooFinance.quote(ticker),
-      yahooFinance.chart(ticker, {
-        period1: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000),
-        period2: new Date(),
-        interval: "1d",
-      }),
-    ]);
+    const result = data?.chart?.result?.[0];
+    if (!result) throw new Error("No data returned");
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const quotes = (historical as any).quotes ?? [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const candles = quotes
-      .filter((q: any) => q.open && q.high && q.low && q.close)
-      .map((q: any) => ({
-        time: Math.floor(new Date(q.date).getTime() / 1000),
-        open: q.open,
-        high: q.high,
-        low: q.low,
-        close: q.close,
-        volume: q.volume ?? 0,
-      }));
+    const meta = result.meta;
+    const timestamps: number[] = result.timestamp ?? [];
+    const ohlcv = result.indicators?.quote?.[0] ?? {};
 
-    // Compute indicators from closes
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const closes = candles.map((c: any) => c.close as number);
+    const candles = timestamps
+      .map((t: number, i: number) => ({
+        time: t,
+        open: ohlcv.open?.[i],
+        high: ohlcv.high?.[i],
+        low: ohlcv.low?.[i],
+        close: ohlcv.close?.[i],
+        volume: ohlcv.volume?.[i] ?? 0,
+      }))
+      .filter((c) => c.open && c.high && c.low && c.close);
+
+    const closes = candles.map((c) => c.close as number);
     const indicators = computeIndicators(closes);
+
+    // 52-week high/low from meta
+    const high52w = meta.fiftyTwoWeekHigh ?? Math.max(...closes);
+    const low52w = meta.fiftyTwoWeekLow ?? Math.min(...closes);
+
+    const price = meta.regularMarketPrice ?? closes[closes.length - 1];
+    const prevClose = meta.previousClose ?? meta.chartPreviousClose ?? closes[closes.length - 2];
+    const change = prevClose ? price - prevClose : 0;
+    const changePct = prevClose ? (change / prevClose) * 100 : 0;
 
     return NextResponse.json({
       symbol: ticker,
-      name: quote.longName ?? quote.shortName ?? ticker,
-      price: quote.regularMarketPrice,
-      change: quote.regularMarketChange,
-      changePct: quote.regularMarketChangePercent,
-      volume: quote.regularMarketVolume,
-      marketCap: quote.marketCap,
-      high52w: quote.fiftyTwoWeekHigh,
-      low52w: quote.fiftyTwoWeekLow,
+      name: meta.longName ?? meta.shortName ?? ticker,
+      price,
+      change,
+      changePct,
+      volume: meta.regularMarketVolume,
+      marketCap: meta.marketCap,
+      high52w,
+      low52w,
       candles,
       indicators,
     });
@@ -62,33 +77,26 @@ function computeIndicators(closes: number[]) {
   const n = closes.length;
   if (n < 26) return null;
 
-  // RSI(14)
   const rsi = computeRSI(closes, 14);
 
-  // MACD (12,26,9)
   const ema12 = computeEMA(closes, 12);
   const ema26 = computeEMA(closes, 26);
   const macdLine = ema12.map((v, i) => v - ema26[i]);
   const signalLine = computeEMA(macdLine.slice(25), 9);
   const macdCurrent = macdLine[n - 1];
   const signalCurrent = signalLine[signalLine.length - 1];
-  const histogram = macdCurrent - signalCurrent;
 
-  // Bollinger Bands (20, 2)
   const bb = computeBB(closes, 20, 2);
-
-  // MA20, MA50
   const ma20 = avg(closes.slice(n - 20));
   const ma50 = n >= 50 ? avg(closes.slice(n - 50)) : null;
 
-  // Support/Resistance (simple pivot)
   const recentHigh = Math.max(...closes.slice(n - 20));
   const recentLow = Math.min(...closes.slice(n - 20));
   const pivot = (recentHigh + recentLow + closes[n - 1]) / 3;
 
   return {
     rsi: rsi[rsi.length - 1],
-    macd: { macd: macdCurrent, signal: signalCurrent, histogram },
+    macd: { macd: macdCurrent, signal: signalCurrent, histogram: macdCurrent - signalCurrent },
     bb: { upper: bb.upper, middle: bb.middle, lower: bb.lower },
     ma20,
     ma50,
@@ -117,14 +125,12 @@ function computeEMA(data: number[], period: number): number[] {
 function computeRSI(data: number[], period: number): number[] {
   const result: number[] = [];
   let avgGain = 0, avgLoss = 0;
-
   for (let i = 1; i <= period; i++) {
     const d = data[i] - data[i - 1];
     if (d > 0) avgGain += d; else avgLoss += -d;
   }
   avgGain /= period;
   avgLoss /= period;
-
   for (let i = period; i < data.length; i++) {
     if (i > period) {
       const d = data[i] - data[i - 1];
@@ -141,6 +147,5 @@ function computeBB(data: number[], period: number, mult: number) {
   const slice = data.slice(data.length - period);
   const middle = avg(slice);
   const variance = slice.reduce((s, v) => s + (v - middle) ** 2, 0) / period;
-  const std = Math.sqrt(variance);
-  return { upper: middle + mult * std, middle, lower: middle - mult * std };
+  return { upper: middle + mult * Math.sqrt(variance), middle, lower: middle - mult * Math.sqrt(variance) };
 }
