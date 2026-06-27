@@ -35,11 +35,27 @@ interface StockData {
   } | null;
 }
 
+interface NewsItem {
+  title: string;
+  link: string;
+  pubDate: string;
+  description: string;
+}
+
+interface AnalysisNewsItem {
+  title: string;
+  sentiment: "positive" | "negative" | "neutral";
+  impact: string;
+}
+
 interface Analysis {
   trend: "bullish" | "bearish" | "neutral";
   trendTH: string;
   score: number;
   summary: string;
+  newsSentiment: "positive" | "negative" | "neutral";
+  newsSummaryTH: string;
+  newsItems: AnalysisNewsItem[];
   entryZone: { min: number; max: number };
   targetPrice: number;
   stopLoss: number;
@@ -51,12 +67,20 @@ interface Analysis {
   timeframe: string;
 }
 
+const sentimentColor = {
+  positive: "text-green-400 bg-green-900/30 border-green-800",
+  negative: "text-red-400 bg-red-900/30 border-red-800",
+  neutral: "text-slate-400 bg-slate-800/50 border-slate-700",
+};
+const sentimentLabel = { positive: "บวก", negative: "ลบ", neutral: "กลาง" };
+
 export default function Home() {
   const [query, setQuery] = useState("");
   const [isCrypto, setIsCrypto] = useState(false);
   const [loading, setLoading] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [data, setData] = useState<StockData | null>(null);
+  const [news, setNews] = useState<NewsItem[]>([]);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [error, setError] = useState("");
 
@@ -65,12 +89,20 @@ export default function Home() {
     setError("");
     setData(null);
     setAnalysis(null);
+    setNews([]);
     try {
-      const res = await fetch(`/api/stock?symbol=${sym}&crypto=${crypto}`);
-      const json = await res.json();
-      if (json.error) throw new Error(json.error);
-      setData(json);
-      await analyze(json);
+      const ticker = crypto ? `${sym.toUpperCase()}-USD` : sym.toUpperCase();
+      const [stockRes, newsRes] = await Promise.all([
+        fetch(`/api/stock?symbol=${sym}&crypto=${crypto}`),
+        fetch(`/api/news?symbol=${ticker}`),
+      ]);
+      const stockJson = await stockRes.json();
+      if (stockJson.error) throw new Error(stockJson.error);
+      const newsJson = await newsRes.json();
+      const newsItems: NewsItem[] = newsJson.items ?? [];
+      setData(stockJson);
+      setNews(newsItems);
+      await analyze(stockJson, newsItems);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
     } finally {
@@ -78,13 +110,13 @@ export default function Home() {
     }
   }
 
-  async function analyze(stockData: StockData) {
+  async function analyze(stockData: StockData, newsItems: NewsItem[]) {
     setAnalyzing(true);
     try {
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(stockData),
+        body: JSON.stringify({ ...stockData, news: newsItems }),
       });
       const json = await res.json();
       if (!json.error) setAnalysis(json);
@@ -93,12 +125,7 @@ export default function Home() {
     }
   }
 
-  const trendColor = {
-    bullish: "text-green-400",
-    bearish: "text-red-400",
-    neutral: "text-gray-400",
-  };
-
+  const trendColor = { bullish: "text-green-400", bearish: "text-red-400", neutral: "text-gray-400" };
   const suggestionStyle = {
     Buy: "bg-green-900/40 text-green-300 border border-green-700",
     Wait: "bg-yellow-900/40 text-yellow-300 border border-yellow-700",
@@ -107,7 +134,6 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-[#0a0e1a] text-slate-200">
-      {/* Header */}
       <header className="border-b border-slate-800 px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center gap-3">
           <div className="text-2xl">📈</div>
@@ -123,54 +149,22 @@ export default function Home() {
         <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
           <div className="flex gap-3 mb-4">
             <div className="flex bg-slate-800 rounded-lg p-1 gap-1">
-              <button
-                onClick={() => setIsCrypto(false)}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${!isCrypto ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}
-              >
-                US Stocks
-              </button>
-              <button
-                onClick={() => setIsCrypto(true)}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${isCrypto ? "bg-orange-500 text-white" : "text-slate-400 hover:text-white"}`}
-              >
-                Crypto
-              </button>
+              <button onClick={() => setIsCrypto(false)} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${!isCrypto ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}>US Stocks</button>
+              <button onClick={() => setIsCrypto(true)} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${isCrypto ? "bg-orange-500 text-white" : "text-slate-400 hover:text-white"}`}>Crypto</button>
             </div>
-            <form
-              onSubmit={(e) => { e.preventDefault(); if (query.trim()) search(query.trim(), isCrypto); }}
-              className="flex flex-1 gap-2"
-            >
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value.toUpperCase())}
-                placeholder={isCrypto ? "เช่น BTC, ETH, SOL..." : "เช่น AAPL, NVDA, TSLA..."}
-                className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
-              />
-              <button
-                type="submit"
-                disabled={loading}
-                className="px-5 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium disabled:opacity-50 transition"
-              >
-                {loading ? "กำลังโหลด..." : "วิเคราะห์"}
-              </button>
+            <form onSubmit={(e) => { e.preventDefault(); if (query.trim()) search(query.trim(), isCrypto); }} className="flex flex-1 gap-2">
+              <input value={query} onChange={(e) => setQuery(e.target.value.toUpperCase())} placeholder={isCrypto ? "เช่น BTC, ETH, SOL..." : "เช่น AAPL, NVDA, TSLA..."} className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500" />
+              <button type="submit" disabled={loading} className="px-5 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium disabled:opacity-50 transition">{loading ? "กำลังโหลด..." : "วิเคราะห์"}</button>
             </form>
           </div>
           <div className="flex flex-wrap gap-2">
             {POPULAR.map((p) => (
-              <button
-                key={p.symbol}
-                onClick={() => { setQuery(p.symbol); setIsCrypto(p.crypto); search(p.symbol, p.crypto); }}
-                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-full text-xs transition"
-              >
-                {p.label}
-              </button>
+              <button key={p.symbol} onClick={() => { setQuery(p.symbol); setIsCrypto(p.crypto); search(p.symbol, p.crypto); }} className="px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-full text-xs transition">{p.label}</button>
             ))}
           </div>
         </div>
 
-        {error && (
-          <div className="bg-red-900/30 border border-red-800 rounded-xl p-4 text-red-300 text-sm">{error}</div>
-        )}
+        {error && <div className="bg-red-900/30 border border-red-800 rounded-xl p-4 text-red-300 text-sm">{error}</div>}
 
         {data && (
           <>
@@ -210,40 +204,25 @@ export default function Home() {
               {data.indicators && (
                 <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 space-y-4">
                   <h3 className="font-semibold text-white">Technical Indicators</h3>
-
-                  {/* RSI */}
                   <div>
                     <div className="flex justify-between text-sm mb-1">
                       <span className="text-slate-400">RSI (14)</span>
                       <span className={data.indicators.rsi > 70 ? "text-red-400" : data.indicators.rsi < 30 ? "text-green-400" : "text-white"}>
                         {data.indicators.rsi?.toFixed(1)}
-                        <span className="text-slate-500 ml-1 text-xs">
-                          {data.indicators.rsi > 70 ? "Overbought" : data.indicators.rsi < 30 ? "Oversold" : "Normal"}
-                        </span>
+                        <span className="text-slate-500 ml-1 text-xs">{data.indicators.rsi > 70 ? "Overbought" : data.indicators.rsi < 30 ? "Oversold" : "Normal"}</span>
                       </span>
                     </div>
                     <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${data.indicators.rsi > 70 ? "bg-red-500" : data.indicators.rsi < 30 ? "bg-green-500" : "bg-blue-500"}`}
-                        style={{ width: `${Math.min(data.indicators.rsi, 100)}%` }}
-                      />
+                      <div className={`h-full rounded-full ${data.indicators.rsi > 70 ? "bg-red-500" : data.indicators.rsi < 30 ? "bg-green-500" : "bg-blue-500"}`} style={{ width: `${Math.min(data.indicators.rsi, 100)}%` }} />
                     </div>
-                    <div className="flex justify-between text-xs text-slate-600 mt-0.5">
-                      <span>0</span><span>30</span><span>70</span><span>100</span>
-                    </div>
+                    <div className="flex justify-between text-xs text-slate-600 mt-0.5"><span>0</span><span>30</span><span>70</span><span>100</span></div>
                   </div>
-
-                  {/* MACD */}
                   <div className="flex justify-between items-center">
                     <span className="text-slate-400 text-sm">MACD</span>
-                    <div className="text-right text-sm">
-                      <span className={data.indicators.macd.histogram > 0 ? "text-green-400" : "text-red-400"}>
-                        {data.indicators.macd.histogram > 0 ? "▲" : "▼"} Hist: {data.indicators.macd.histogram?.toFixed(4)}
-                      </span>
-                    </div>
+                    <span className={data.indicators.macd.histogram > 0 ? "text-green-400 text-sm" : "text-red-400 text-sm"}>
+                      {data.indicators.macd.histogram > 0 ? "▲" : "▼"} Hist: {data.indicators.macd.histogram?.toFixed(4)}
+                    </span>
                   </div>
-
-                  {/* BB */}
                   <div>
                     <p className="text-slate-400 text-sm mb-1">Bollinger Bands</p>
                     <div className="text-xs space-y-0.5">
@@ -252,14 +231,10 @@ export default function Home() {
                       <div className="flex justify-between"><span className="text-slate-500">Lower</span><span className="text-purple-300">${data.indicators.bb.lower?.toFixed(2)}</span></div>
                     </div>
                   </div>
-
-                  {/* MA */}
                   <div className="flex gap-4 text-sm">
                     <div><span className="text-slate-400">MA20 </span><span className="text-yellow-400">${data.indicators.ma20?.toFixed(2)}</span></div>
                     {data.indicators.ma50 && <div><span className="text-slate-400">MA50 </span><span className="text-orange-400">${data.indicators.ma50?.toFixed(2)}</span></div>}
                   </div>
-
-                  {/* S/R */}
                   <div>
                     <p className="text-slate-400 text-sm mb-1">แนวรับ / แนวต้าน</p>
                     <div className="flex gap-6 text-sm">
@@ -279,37 +254,26 @@ export default function Home() {
               {/* AI Analysis */}
               <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 space-y-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-semibold text-white">AI Analysis</h3>
+                  <h3 className="font-semibold text-white">AI วิเคราะห์</h3>
                   <span className="text-xs text-slate-500">by Claude</span>
                 </div>
-
                 {analyzing && (
                   <div className="flex items-center gap-2 text-slate-400 text-sm">
                     <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                    กำลังวิเคราะห์...
+                    กำลังวิเคราะห์ข้อมูลและข่าว...
                   </div>
                 )}
-
                 {analysis && (
                   <div className="space-y-4">
-                    {/* Suggestion badge */}
                     <div className="flex items-center gap-3">
-                      <span className={`px-4 py-1.5 rounded-full text-sm font-bold ${suggestionStyle[analysis.suggestion]}`}>
-                        {analysis.suggestionTH}
-                      </span>
+                      <span className={`px-4 py-1.5 rounded-full text-sm font-bold ${suggestionStyle[analysis.suggestion]}`}>{analysis.suggestionTH}</span>
                       <span className={`font-medium ${trendColor[analysis.trend]}`}>{analysis.trendTH}</span>
                       <span className="ml-auto text-slate-400 text-sm">Score <span className="text-white font-bold">{analysis.score}/10</span></span>
                     </div>
-
-                    {/* Score bar */}
                     <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
                       <div className="h-full rounded-full bg-gradient-to-r from-red-500 via-yellow-500 to-green-500" style={{ width: `${analysis.score * 10}%` }} />
                     </div>
-
-                    {/* Summary */}
                     <p className="text-sm text-slate-300 leading-relaxed">{analysis.summary}</p>
-
-                    {/* Entry/Exit */}
                     <div className="grid grid-cols-3 gap-2 text-center text-sm">
                       <div className="bg-green-900/30 border border-green-800 rounded-lg p-2">
                         <p className="text-xs text-slate-400 mb-1">จุดเข้า</p>
@@ -325,7 +289,6 @@ export default function Home() {
                         <p className="text-red-300 font-medium">${analysis.stopLoss?.toFixed(2)}</p>
                       </div>
                     </div>
-
                     <div className="flex justify-between text-sm">
                       <span className="text-slate-400">Risk/Reward</span>
                       <span className="text-white">1 : {analysis.riskReward?.toFixed(2)}</span>
@@ -334,30 +297,79 @@ export default function Home() {
                       <span className="text-slate-400">ระยะเวลาถือ</span>
                       <span className="text-white">{analysis.timeframe}</span>
                     </div>
-
-                    {/* Signals */}
                     <div>
                       <p className="text-xs text-slate-400 mb-2">สัญญาณ</p>
                       <ul className="space-y-1">
-                        {analysis.signals.map((s, i) => (
-                          <li key={i} className="text-xs text-green-300 flex gap-1.5"><span>✓</span>{s}</li>
-                        ))}
+                        {analysis.signals.map((s, i) => <li key={i} className="text-xs text-green-300 flex gap-1.5"><span>✓</span>{s}</li>)}
                       </ul>
                     </div>
-
-                    {/* Risks */}
                     <div>
                       <p className="text-xs text-slate-400 mb-2">ความเสี่ยง</p>
                       <ul className="space-y-1">
-                        {analysis.risks.map((r, i) => (
-                          <li key={i} className="text-xs text-red-300 flex gap-1.5"><span>⚠</span>{r}</li>
-                        ))}
+                        {analysis.risks.map((r, i) => <li key={i} className="text-xs text-red-300 flex gap-1.5"><span>⚠</span>{r}</li>)}
                       </ul>
                     </div>
                   </div>
                 )}
               </div>
             </div>
+
+            {/* News Section */}
+            {(news.length > 0 || analyzing) && (
+              <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold text-white">ข่าวล่าสุด</h3>
+                  {analysis?.newsSentiment && (
+                    <span className={`text-xs px-3 py-1 rounded-full border ${sentimentColor[analysis.newsSentiment]}`}>
+                      Sentiment: {sentimentLabel[analysis.newsSentiment]}
+                    </span>
+                  )}
+                </div>
+
+                {analysis?.newsSummaryTH && (
+                  <p className="text-sm text-slate-300 leading-relaxed mb-4 pb-4 border-b border-slate-800">
+                    📰 {analysis.newsSummaryTH}
+                  </p>
+                )}
+
+                <div className="space-y-3">
+                  {news.map((item, i) => {
+                    const aiItem = analysis?.newsItems?.[i];
+                    return (
+                      <div key={i} className="flex gap-3 p-3 bg-slate-800/50 rounded-lg hover:bg-slate-800 transition">
+                        <div className="flex-1 min-w-0">
+                          {aiItem ? (
+                            <p className="text-sm text-white font-medium leading-snug mb-1">{aiItem.title}</p>
+                          ) : (
+                            <p className="text-sm text-white font-medium leading-snug mb-1 line-clamp-2">{item.title}</p>
+                          )}
+                          {aiItem?.impact && (
+                            <p className="text-xs text-slate-400 mb-1">{aiItem.impact}</p>
+                          )}
+                          <div className="flex items-center gap-2">
+                            {aiItem?.sentiment && (
+                              <span className={`text-xs px-2 py-0.5 rounded border ${sentimentColor[aiItem.sentiment]}`}>
+                                {sentimentLabel[aiItem.sentiment]}
+                              </span>
+                            )}
+                            {item.pubDate && (
+                              <span className="text-xs text-slate-500">
+                                {new Date(item.pubDate).toLocaleDateString("th-TH", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        {item.link && (
+                          <a href={item.link} target="_blank" rel="noopener noreferrer" className="text-slate-500 hover:text-blue-400 transition shrink-0 mt-0.5">
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                          </a>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </>
         )}
 
