@@ -119,21 +119,20 @@ ${favQuotes.length > 0 ? `\nFavorites ของผู้ใช้:\n${favQuotes.
 เรียง stockPicks และ cryptoPicks จากน่าซื้อที่สุดไปน้อยสุด ตอบเฉพาะ JSON เท่านั้น`;
 
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        max_tokens: 2500,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 2500, temperature: 0.3 },
+        }),
+      }
+    );
     if (!res.ok) throw new Error(await res.text());
     const result = await res.json();
-    const text = result.choices?.[0]?.message?.content ?? "";
+    const text = result.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("No JSON in response");
     const analysis = JSON.parse(jsonMatch[0]);
