@@ -96,6 +96,35 @@ interface Favorite {
   name?: string;
 }
 
+interface PickItem {
+  symbol: string;
+  name: string;
+  suggestion: "Buy" | "Wait" | "Avoid";
+  score: number;
+  reason: string;
+  entry: number;
+  changePct: number;
+}
+
+interface FavAnalysis {
+  symbol: string;
+  suggestion: "Buy" | "Wait" | "Avoid";
+  score: number;
+  status: string;
+  keyPoint: string;
+}
+
+interface MarketOverview {
+  marketOverview: string;
+  marketMood: "bullish" | "bearish" | "neutral" | "mixed";
+  stockPicks: PickItem[];
+  cryptoPicks: PickItem[];
+  favoritesAnalysis: FavAnalysis[];
+  topRisk: string;
+  bestOpportunity: string;
+  fearGreed: { score: number; rating: string } | null;
+}
+
 const sentimentColor = {
   positive: "text-green-400 bg-green-900/30 border-green-800",
   negative: "text-red-400 bg-red-900/30 border-red-800",
@@ -104,10 +133,14 @@ const sentimentColor = {
 const sentimentLabel = { positive: "บวก", negative: "ลบ", neutral: "กลาง" };
 
 export default function Home() {
+  const [activeTab, setActiveTab] = useState<"overview" | "detail">("overview");
   const [query, setQuery] = useState("");
   const [isCrypto, setIsCrypto] = useState(false);
   const [loading, setLoading] = useState(false);
   const [favorites, setFavorites] = useState<Favorite[]>([]);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [overviewData, setOverviewData] = useState<MarketOverview | null>(null);
+  const [overviewError, setOverviewError] = useState("");
 
   useEffect(() => {
     try {
@@ -138,6 +171,25 @@ export default function Home() {
   const [error, setError] = useState("");
 
   const isFavorited = data ? favorites.some((f) => f.symbol === data.symbol) : false;
+
+  async function loadOverview(favs: Favorite[]) {
+    setOverviewLoading(true);
+    setOverviewError("");
+    try {
+      const res = await fetch("/api/market-overview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ favorites: favs }),
+      });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      setOverviewData(json);
+    } catch (e: unknown) {
+      setOverviewError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
+    } finally {
+      setOverviewLoading(false);
+    }
+  }
 
   async function search(sym: string, crypto: boolean) {
     setLoading(true);
@@ -192,19 +244,206 @@ export default function Home() {
     Avoid: "bg-red-900/40 text-red-300 border border-red-700",
   };
 
+  const moodColor = { bullish: "text-green-400", bearish: "text-red-400", neutral: "text-slate-400", mixed: "text-yellow-400" };
+  const moodLabel = { bullish: "🟢 ขาขึ้น", bearish: "🔴 ขาลง", neutral: "⚪ Sideway", mixed: "🟡 ผสม" };
+  const suggestionBadge = {
+    Buy: "bg-green-900/50 text-green-300 border border-green-700",
+    Wait: "bg-yellow-900/50 text-yellow-300 border border-yellow-700",
+    Avoid: "bg-red-900/50 text-red-300 border border-red-700",
+  };
+
   return (
     <div className="min-h-screen bg-[#0a0e1a] text-slate-200">
       <header className="border-b border-slate-800 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex items-center gap-3">
-          <div className="text-2xl">📈</div>
-          <div>
-            <h1 className="text-xl font-bold text-white">Trade Monitor</h1>
-            <p className="text-xs text-slate-500">US Stocks & Crypto · Swing Trade Analysis</p>
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="text-2xl">📈</div>
+            <div>
+              <h1 className="text-xl font-bold text-white">Trade Monitor</h1>
+              <p className="text-xs text-slate-500">US Stocks & Crypto · Swing Trade Analysis</p>
+            </div>
+          </div>
+          <div className="flex bg-slate-800 rounded-lg p-1 gap-1">
+            <button
+              onClick={() => setActiveTab("overview")}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${activeTab === "overview" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}
+            >🌐 ภาพรวมตลาด</button>
+            <button
+              onClick={() => setActiveTab("detail")}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${activeTab === "detail" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}
+            >🔍 วิเคราะห์รายตัว</button>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+
+        {/* ===== MARKET OVERVIEW TAB ===== */}
+        {activeTab === "overview" && (
+          <div className="space-y-6">
+            <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-white mb-1">วิเคราะห์ภาพรวมตลาด</h2>
+                <p className="text-xs text-slate-500">AI วิเคราะห์ตลาดโดยรวม + ตัวที่น่าสนใจ + Favorites ของคุณ</p>
+              </div>
+              <button
+                onClick={() => loadOverview(favorites)}
+                disabled={overviewLoading}
+                className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg text-sm font-medium transition flex items-center gap-2"
+              >
+                {overviewLoading ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />กำลังวิเคราะห์...</> : "🔍 วิเคราะห์ตอนนี้"}
+              </button>
+            </div>
+
+            {overviewError && <div className="bg-red-900/30 border border-red-800 rounded-xl p-4 text-red-300 text-sm">{overviewError}</div>}
+
+            {overviewLoading && !overviewData && (
+              <div className="text-center py-16 text-slate-500">
+                <div className="w-10 h-10 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+                <p>กำลังดึงข้อมูลตลาดและวิเคราะห์ด้วย AI...</p>
+                <p className="text-xs mt-2">อาจใช้เวลา 10-20 วินาที</p>
+              </div>
+            )}
+
+            {overviewData && (
+              <>
+                {/* Market Mood */}
+                <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+                  <div className="flex flex-wrap items-center gap-3 mb-3">
+                    <h3 className="font-semibold text-white">สถานการณ์ตลาดโดยรวม</h3>
+                    <span className={`text-sm font-bold ${moodColor[overviewData.marketMood]}`}>{moodLabel[overviewData.marketMood]}</span>
+                    {overviewData.fearGreed && (() => {
+                      const s = overviewData.fearGreed!.score;
+                      const c = s >= 75 ? "text-green-300 border-green-700 bg-green-900/30" : s >= 56 ? "text-emerald-300 border-emerald-700 bg-emerald-900/30" : s >= 45 ? "text-slate-300 border-slate-600 bg-slate-800/50" : s >= 25 ? "text-orange-300 border-orange-700 bg-orange-900/30" : "text-red-300 border-red-700 bg-red-900/30";
+                      return <span className={`text-xs px-2.5 py-1 rounded-full border font-medium ${c}`}>Fear&Greed: {s}/100 · {overviewData.fearGreed!.rating}</span>;
+                    })()}
+                  </div>
+                  <p className="text-sm text-slate-300 leading-relaxed">{overviewData.marketOverview}</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+                    <div className="bg-green-900/20 border border-green-800/50 rounded-lg p-3">
+                      <p className="text-xs text-slate-400 mb-1">💡 โอกาสที่ดีที่สุด</p>
+                      <p className="text-sm text-green-300">{overviewData.bestOpportunity}</p>
+                    </div>
+                    <div className="bg-red-900/20 border border-red-800/50 rounded-lg p-3">
+                      <p className="text-xs text-slate-400 mb-1">⚠ ความเสี่ยงหลัก</p>
+                      <p className="text-sm text-red-300">{overviewData.topRisk}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Stock Picks */}
+                {overviewData.stockPicks?.length > 0 && (
+                  <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+                    <h3 className="font-semibold text-white mb-4">🏢 หุ้น US ที่น่าสนใจ</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {overviewData.stockPicks.map((pick) => (
+                        <button
+                          key={pick.symbol}
+                          onClick={() => { const sym = pick.symbol.replace(/-USD$/, ""); setQuery(sym); setIsCrypto(false); setActiveTab("detail"); search(sym, false); }}
+                          className="text-left bg-slate-800/60 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 rounded-xl p-4 transition group"
+                        >
+                          <div className="flex items-start justify-between mb-2">
+                            <div>
+                              <span className="font-bold text-white group-hover:text-blue-300 transition">{pick.symbol}</span>
+                              <span className="text-xs text-slate-500 ml-2 block">{pick.name}</span>
+                            </div>
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${suggestionBadge[pick.suggestion]}`}>{pick.suggestion === "Buy" ? "ซื้อได้" : pick.suggestion === "Wait" ? "รอจังหวะ" : "หลีกเลี่ยง"}</span>
+                          </div>
+                          <p className="text-xs text-slate-400 leading-relaxed mb-2">{pick.reason}</p>
+                          <div className="flex justify-between text-xs">
+                            <span className={pick.changePct >= 0 ? "text-green-400" : "text-red-400"}>{pick.changePct >= 0 ? "+" : ""}{pick.changePct?.toFixed(2)}%</span>
+                            <span className="text-slate-500">Score: <span className="text-white">{pick.score}/10</span></span>
+                          </div>
+                          {pick.entry && <p className="text-xs text-slate-500 mt-1">เข้าได้ที่ <span className="text-blue-400">${pick.entry?.toFixed(2)}</span></p>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Crypto Picks */}
+                {overviewData.cryptoPicks?.length > 0 && (
+                  <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+                    <h3 className="font-semibold text-white mb-4">🪙 Crypto ที่น่าสนใจ</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {overviewData.cryptoPicks.map((pick) => (
+                        <button
+                          key={pick.symbol}
+                          onClick={() => { const sym = pick.symbol.replace(/-USD$/, ""); setQuery(sym); setIsCrypto(true); setActiveTab("detail"); search(sym, true); }}
+                          className="text-left bg-slate-800/60 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 rounded-xl p-4 transition group"
+                        >
+                          <div className="flex items-start justify-between mb-2">
+                            <div>
+                              <span className="font-bold text-white group-hover:text-orange-300 transition">{pick.symbol.replace(/-USD$/, "")}</span>
+                              <span className="text-xs text-slate-500 ml-2 block">{pick.name}</span>
+                            </div>
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${suggestionBadge[pick.suggestion]}`}>{pick.suggestion === "Buy" ? "ซื้อได้" : pick.suggestion === "Wait" ? "รอจังหวะ" : "หลีกเลี่ยง"}</span>
+                          </div>
+                          <p className="text-xs text-slate-400 leading-relaxed mb-2">{pick.reason}</p>
+                          <div className="flex justify-between text-xs">
+                            <span className={pick.changePct >= 0 ? "text-green-400" : "text-red-400"}>{pick.changePct >= 0 ? "+" : ""}{pick.changePct?.toFixed(2)}%</span>
+                            <span className="text-slate-500">Score: <span className="text-white">{pick.score}/10</span></span>
+                          </div>
+                          {pick.entry && <p className="text-xs text-slate-500 mt-1">เข้าได้ที่ <span className="text-orange-400">${pick.entry?.toFixed(2)}</span></p>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Favorites Analysis */}
+                {overviewData.favoritesAnalysis?.length > 0 && (
+                  <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+                    <h3 className="font-semibold text-white mb-4">⭐ สถานการณ์ Favorites ของคุณ</h3>
+                    <div className="space-y-3">
+                      {overviewData.favoritesAnalysis.map((fav) => {
+                        const favInfo = favorites.find((f) => f.symbol.replace(/-USD$/, "").toUpperCase() === fav.symbol.replace(/-USD$/, "").toUpperCase());
+                        return (
+                          <button
+                            key={fav.symbol}
+                            onClick={() => { const sym = fav.symbol.replace(/-USD$/, ""); setQuery(sym); setIsCrypto(favInfo?.crypto ?? false); setActiveTab("detail"); search(sym, favInfo?.crypto ?? false); }}
+                            className="w-full text-left bg-slate-800/50 hover:bg-slate-800 border border-slate-700 rounded-xl p-4 transition"
+                          >
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-yellow-400">⭐</span>
+                                <span className="font-bold text-white">{fav.symbol.replace(/-USD$/, "")}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-slate-500">Score: <span className="text-white">{fav.score}/10</span></span>
+                                <span className={`text-xs px-2 py-0.5 rounded-full ${suggestionBadge[fav.suggestion]}`}>{fav.suggestion === "Buy" ? "ซื้อได้" : fav.suggestion === "Wait" ? "รอจังหวะ" : "หลีกเลี่ยง"}</span>
+                              </div>
+                            </div>
+                            <p className="text-sm text-slate-300 mb-1">{fav.status}</p>
+                            <p className="text-xs text-slate-500">🎯 {fav.keyPoint}</p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {overviewData.favoritesAnalysis?.length === 0 && (
+                  <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 text-center text-slate-500 text-sm">
+                    <p>ยังไม่มี Favorites — ไปที่ "วิเคราะห์รายตัว" แล้วกด ☆ เพื่อเพิ่ม</p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {!overviewData && !overviewLoading && (
+              <div className="text-center py-16 text-slate-600">
+                <div className="text-5xl mb-4">🌐</div>
+                <p className="text-lg text-slate-500">กด "วิเคราะห์ตอนนี้" เพื่อดูภาพรวมตลาด</p>
+                <p className="text-sm mt-2 text-slate-600">AI จะวิเคราะห์ตลาด US stocks + crypto และ Favorites ของคุณ</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ===== DETAIL TAB ===== */}
+        {activeTab === "detail" && (
+          <div className="space-y-6">
         {/* Search */}
         <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
           <div className="flex gap-3 mb-4">
@@ -546,6 +785,8 @@ export default function Home() {
             <div className="text-5xl mb-4">📊</div>
             <p className="text-lg">ค้นหาหุ้นหรือ crypto เพื่อเริ่มวิเคราะห์</p>
             <p className="text-sm mt-2">รองรับ US Stocks (NYSE/NASDAQ) และ Cryptocurrency</p>
+          </div>
+        )}
           </div>
         )}
       </main>
