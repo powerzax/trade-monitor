@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
 
 const CandleChart = dynamic(() => import("@/components/CandleChart"), { ssr: false });
@@ -12,6 +12,25 @@ const POPULAR = [
   { symbol: "ETH", label: "ETH", crypto: true },
   { symbol: "SOL", label: "SOL", crypto: true },
 ];
+
+interface AnalystData {
+  recommendation: string | null;
+  targetPrice: number | null;
+  targetLow: number | null;
+  targetHigh: number | null;
+  analystCount: number | null;
+  strongBuy: number | null;
+  buy: number | null;
+  hold: number | null;
+  sell: number | null;
+  strongSell: number | null;
+  peRatio: number | null;
+  forwardPE: number | null;
+  eps: number | null;
+  epsNextQuarter: number | null;
+  revenueGrowth: number | null;
+  profitMargin: number | null;
+}
 
 interface StockData {
   symbol: string;
@@ -32,7 +51,11 @@ interface StockData {
     ma50: number | null;
     support: number[];
     resistance: number[];
+    volumeRatio: number;
+    avgVolume20d: number;
   } | null;
+  analystData: AnalystData | null;
+  fearGreed: { score: number; rating: string } | null;
 }
 
 interface NewsItem {
@@ -67,6 +90,12 @@ interface Analysis {
   timeframe: string;
 }
 
+interface Favorite {
+  symbol: string;
+  crypto: boolean;
+  name?: string;
+}
+
 const sentimentColor = {
   positive: "text-green-400 bg-green-900/30 border-green-800",
   negative: "text-red-400 bg-red-900/30 border-red-800",
@@ -78,11 +107,37 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [isCrypto, setIsCrypto] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [favorites, setFavorites] = useState<Favorite[]>([]);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("tm_favorites");
+      if (saved) setFavorites(JSON.parse(saved));
+    } catch {}
+  }, []);
+
+  function saveFavorites(favs: Favorite[]) {
+    setFavorites(favs);
+    localStorage.setItem("tm_favorites", JSON.stringify(favs));
+  }
+
+  function toggleFavorite() {
+    if (!data) return;
+    const exists = favorites.some((f) => f.symbol === data.symbol);
+    if (exists) {
+      saveFavorites(favorites.filter((f) => f.symbol !== data.symbol));
+    } else {
+      saveFavorites([...favorites, { symbol: data.symbol, crypto: isCrypto, name: data.name }]);
+    }
+  }
+
   const [analyzing, setAnalyzing] = useState(false);
   const [data, setData] = useState<StockData | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [error, setError] = useState("");
+
+  const isFavorited = data ? favorites.some((f) => f.symbol === data.symbol) : false;
 
   async function search(sym: string, crypto: boolean) {
     setLoading(true);
@@ -116,7 +171,12 @@ export default function Home() {
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...stockData, news: newsItems }),
+        body: JSON.stringify({
+          ...stockData,
+          news: newsItems,
+          analystData: stockData.analystData,
+          fearGreed: stockData.fearGreed,
+        }),
       });
       const json = await res.json();
       if (!json.error) setAnalysis(json);
@@ -157,7 +217,30 @@ export default function Home() {
               <button type="submit" disabled={loading} className="px-5 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium disabled:opacity-50 transition">{loading ? "กำลังโหลด..." : "วิเคราะห์"}</button>
             </form>
           </div>
+          {favorites.length > 0 && (
+            <div className="mb-3">
+              <p className="text-xs text-slate-500 mb-2">⭐ Favorites</p>
+              <div className="flex flex-wrap gap-2">
+                {favorites.map((f) => (
+                  <button
+                    key={f.symbol}
+                    onClick={() => { setQuery(f.symbol.replace(/-USD$/, "")); setIsCrypto(f.crypto); search(f.symbol.replace(/-USD$/, ""), f.crypto); }}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-yellow-900/30 hover:bg-yellow-900/50 border border-yellow-700/50 rounded-full text-xs text-yellow-300 transition"
+                  >
+                    <span>⭐</span>
+                    <span>{f.symbol.replace(/-USD$/, "")}</span>
+                    {f.name && <span className="text-yellow-500/70 hidden sm:inline">· {f.name.slice(0, 15)}</span>}
+                    <span
+                      onClick={(e) => { e.stopPropagation(); saveFavorites(favorites.filter((x) => x.symbol !== f.symbol)); }}
+                      className="ml-1 text-yellow-600 hover:text-red-400 transition"
+                    >×</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex flex-wrap gap-2">
+            <p className="w-full text-xs text-slate-500 mb-1">ยอดนิยม</p>
             {POPULAR.map((p) => (
               <button key={p.symbol} onClick={() => { setQuery(p.symbol); setIsCrypto(p.crypto); search(p.symbol, p.crypto); }} className="px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-full text-xs transition">{p.label}</button>
             ))}
@@ -175,12 +258,24 @@ export default function Home() {
                   <div className="flex items-center gap-3 mb-1">
                     <h2 className="text-2xl font-bold text-white">{data.symbol}</h2>
                     <span className="text-slate-400 text-sm">{data.name}</span>
+                    <button
+                      onClick={toggleFavorite}
+                      title={isFavorited ? "ลบออกจาก Favorites" : "เพิ่มใน Favorites"}
+                      className={`text-xl transition hover:scale-110 ${isFavorited ? "text-yellow-400" : "text-slate-600 hover:text-yellow-400"}`}
+                    >
+                      {isFavorited ? "⭐" : "☆"}
+                    </button>
                   </div>
-                  <div className="flex items-baseline gap-3">
+                  <div className="flex items-baseline gap-3 flex-wrap">
                     <span className="text-4xl font-bold text-white">${data.price?.toFixed(2)}</span>
                     <span className={`text-lg font-medium ${data.change >= 0 ? "text-green-400" : "text-red-400"}`}>
                       {data.change >= 0 ? "+" : ""}{data.change?.toFixed(2)} ({data.changePct?.toFixed(2)}%)
                     </span>
+                    {data.fearGreed && (() => {
+                      const s = data.fearGreed!.score;
+                      const color = s >= 75 ? "text-green-300 border-green-700 bg-green-900/30" : s >= 56 ? "text-emerald-300 border-emerald-700 bg-emerald-900/30" : s >= 45 ? "text-slate-300 border-slate-600 bg-slate-800/50" : s >= 25 ? "text-orange-300 border-orange-700 bg-orange-900/30" : "text-red-300 border-red-700 bg-red-900/30";
+                      return <span className={`text-xs px-2.5 py-1 rounded-full border font-medium ${color}`}>😱 Fear&Greed: {s}/100</span>;
+                    })()}
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm">
@@ -235,6 +330,16 @@ export default function Home() {
                     <div><span className="text-slate-400">MA20 </span><span className="text-yellow-400">${data.indicators.ma20?.toFixed(2)}</span></div>
                     {data.indicators.ma50 && <div><span className="text-slate-400">MA50 </span><span className="text-orange-400">${data.indicators.ma50?.toFixed(2)}</span></div>}
                   </div>
+                  {data.indicators.volumeRatio != null && (
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-slate-400">Volume Ratio (20d avg)</span>
+                      <span className={data.indicators.volumeRatio > 1.5 ? "text-yellow-400 font-medium" : data.indicators.volumeRatio < 0.7 ? "text-slate-400" : "text-white"}>
+                        {data.indicators.volumeRatio}x
+                        {data.indicators.volumeRatio > 1.5 && <span className="ml-1 text-xs text-yellow-500">⚠ สูงผิดปกติ</span>}
+                        {data.indicators.volumeRatio < 0.7 && <span className="ml-1 text-xs text-slate-500">(ต่ำ)</span>}
+                      </span>
+                    </div>
+                  )}
                   <div>
                     <p className="text-slate-400 text-sm mb-1">แนวรับ / แนวต้าน</p>
                     <div className="flex gap-6 text-sm">
@@ -255,7 +360,7 @@ export default function Home() {
               <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="font-semibold text-white">AI วิเคราะห์</h3>
-                  <span className="text-xs text-slate-500">by Claude</span>
+                  <span className="text-xs text-slate-500">by GPT-4o mini</span>
                 </div>
                 {analyzing && (
                   <div className="flex items-center gap-2 text-slate-400 text-sm">
@@ -313,6 +418,69 @@ export default function Home() {
                 )}
               </div>
             </div>
+
+            {/* Analyst Ratings */}
+            {data.analystData && (() => {
+              const a = data.analystData!;
+              const total = (a.strongBuy ?? 0) + (a.buy ?? 0) + (a.hold ?? 0) + (a.sell ?? 0) + (a.strongSell ?? 0);
+              const bullPct = total > 0 ? Math.round(((a.strongBuy ?? 0) + (a.buy ?? 0)) / total * 100) : 0;
+              const bearPct = total > 0 ? Math.round(((a.sell ?? 0) + (a.strongSell ?? 0)) / total * 100) : 0;
+              const holdPct = 100 - bullPct - bearPct;
+              const recColor: Record<string, string> = { buy: "text-green-400", strongbuy: "text-green-300", hold: "text-yellow-400", sell: "text-red-400", strongsell: "text-red-300" };
+              return (
+                <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+                  <h3 className="font-semibold text-white mb-4">Analyst Ratings (Wall Street)</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-3">
+                        <span className={`text-2xl font-bold capitalize ${recColor[a.recommendation?.toLowerCase() ?? ""] ?? "text-white"}`}>{a.recommendation?.toUpperCase() ?? "N/A"}</span>
+                        {a.analystCount && <span className="text-xs text-slate-500">{a.analystCount} analysts</span>}
+                      </div>
+                      {total > 0 && (
+                        <div>
+                          <div className="flex h-2.5 rounded-full overflow-hidden gap-0.5 mb-1">
+                            {bullPct > 0 && <div className="bg-green-500 rounded-l-full" style={{ width: `${bullPct}%` }} />}
+                            {holdPct > 0 && <div className="bg-yellow-500" style={{ width: `${holdPct}%` }} />}
+                            {bearPct > 0 && <div className="bg-red-500 rounded-r-full" style={{ width: `${bearPct}%` }} />}
+                          </div>
+                          <div className="flex justify-between text-xs text-slate-500">
+                            <span className="text-green-400">Buy {bullPct}%</span>
+                            <span className="text-yellow-400">Hold {holdPct}%</span>
+                            <span className="text-red-400">Sell {bearPct}%</span>
+                          </div>
+                          <div className="flex gap-3 mt-2 text-xs text-slate-400">
+                            <span>SB:{a.strongBuy ?? 0}</span><span>B:{a.buy ?? 0}</span><span>H:{a.hold ?? 0}</span><span>S:{a.sell ?? 0}</span><span>SS:{a.strongSell ?? 0}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-2 text-sm">
+                      <p className="text-xs text-slate-500 mb-2 font-medium">ราคาเป้าหมาย</p>
+                      {a.targetPrice && <div className="flex justify-between"><span className="text-slate-400">Mean</span><span className="text-blue-300 font-medium">${a.targetPrice.toFixed(2)}</span></div>}
+                      {a.targetLow && <div className="flex justify-between"><span className="text-slate-400">Low</span><span className="text-slate-300">${a.targetLow.toFixed(2)}</span></div>}
+                      {a.targetHigh && <div className="flex justify-between"><span className="text-slate-400">High</span><span className="text-slate-300">${a.targetHigh.toFixed(2)}</span></div>}
+                      {a.targetPrice && data.price && (
+                        <div className="flex justify-between border-t border-slate-800 pt-2 mt-2">
+                          <span className="text-slate-400">Upside</span>
+                          <span className={a.targetPrice > data.price ? "text-green-400 font-medium" : "text-red-400 font-medium"}>
+                            {a.targetPrice > data.price ? "+" : ""}{(((a.targetPrice - data.price) / data.price) * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-2 text-sm">
+                      <p className="text-xs text-slate-500 mb-2 font-medium">Fundamental</p>
+                      {a.peRatio != null && <div className="flex justify-between"><span className="text-slate-400">P/E (TTM)</span><span className="text-white">{a.peRatio.toFixed(1)}</span></div>}
+                      {a.forwardPE != null && <div className="flex justify-between"><span className="text-slate-400">Forward P/E</span><span className="text-white">{a.forwardPE.toFixed(1)}</span></div>}
+                      {a.eps != null && <div className="flex justify-between"><span className="text-slate-400">EPS (TTM)</span><span className="text-white">${a.eps.toFixed(2)}</span></div>}
+                      {a.epsNextQuarter != null && <div className="flex justify-between"><span className="text-slate-400">EPS Next Q (est)</span><span className="text-white">${a.epsNextQuarter.toFixed(2)}</span></div>}
+                      {a.revenueGrowth != null && <div className="flex justify-between"><span className="text-slate-400">Revenue Growth</span><span className={a.revenueGrowth >= 0 ? "text-green-400" : "text-red-400"}>{(a.revenueGrowth * 100).toFixed(1)}%</span></div>}
+                      {a.profitMargin != null && <div className="flex justify-between"><span className="text-slate-400">Profit Margin</span><span className={a.profitMargin >= 0 ? "text-green-400" : "text-red-400"}>{(a.profitMargin * 100).toFixed(1)}%</span></div>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* News Section */}
             {(news.length > 0 || analyzing) && (
