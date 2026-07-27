@@ -143,24 +143,37 @@ export default function Home() {
   const [overviewError, setOverviewError] = useState("");
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem("tm_favorites");
-      if (saved) setFavorites(JSON.parse(saved));
-    } catch {}
+    fetch("/api/favorites")
+      .then((r) => r.json())
+      .then((j) => { if (j.favorites) setFavorites(j.favorites); })
+      .catch(() => {});
   }, []);
 
-  function saveFavorites(favs: Favorite[]) {
-    setFavorites(favs);
-    localStorage.setItem("tm_favorites", JSON.stringify(favs));
+  async function saveFavorite(fav: Favorite) {
+    await fetch("/api/favorites", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(fav),
+    });
+    setFavorites((prev) => [...prev.filter((f) => f.symbol !== fav.symbol), fav]);
   }
 
-  function toggleFavorite() {
+  async function removeFavorite(symbol: string) {
+    await fetch("/api/favorites", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol }),
+    });
+    setFavorites((prev) => prev.filter((f) => f.symbol !== symbol));
+  }
+
+  async function toggleFavorite() {
     if (!data) return;
     const exists = favorites.some((f) => f.symbol === data.symbol);
     if (exists) {
-      saveFavorites(favorites.filter((f) => f.symbol !== data.symbol));
+      await removeFavorite(data.symbol);
     } else {
-      saveFavorites([...favorites, { symbol: data.symbol, crypto: isCrypto, name: data.name }]);
+      await saveFavorite({ symbol: data.symbol, crypto: isCrypto, name: data.name });
     }
   }
 
@@ -470,7 +483,7 @@ export default function Home() {
                     <span>{f.symbol.replace(/-USD$/, "")}</span>
                     {f.name && <span className="text-yellow-500/70 hidden sm:inline">· {f.name.slice(0, 15)}</span>}
                     <span
-                      onClick={(e) => { e.stopPropagation(); saveFavorites(favorites.filter((x) => x.symbol !== f.symbol)); }}
+                      onClick={(e) => { e.stopPropagation(); removeFavorite(f.symbol); }}
                       className="ml-1 text-yellow-600 hover:text-red-400 transition"
                     >×</span>
                   </button>
