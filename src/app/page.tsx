@@ -72,22 +72,28 @@ interface AnalysisNewsItem {
 }
 
 interface Analysis {
+  tldr: string;
   trend: "bullish" | "bearish" | "neutral";
   trendTH: string;
   score: number;
   summary: string;
+  technicalDetail: string;
+  fundamentalDetail: string;
   newsSentiment: "positive" | "negative" | "neutral";
   newsSummaryTH: string;
   newsItems: AnalysisNewsItem[];
-  entryZone: { min: number; max: number };
-  targetPrice: number;
+  entryStrategy: { first: number; second: number; reason: string };
+  targets: { tp1: number; tp2: number; tp1Reason: string; tp2Reason: string };
   stopLoss: number;
+  stopLossReason: string;
   riskReward: number;
   signals: string[];
   risks: string[];
+  catalysts: string[];
   suggestion: "Buy" | "Wait" | "Avoid";
   suggestionTH: string;
   timeframe: string;
+  exitStrategy: string;
 }
 
 interface Favorite {
@@ -622,7 +628,8 @@ export default function Home() {
                 )}
                 {analysis && (
                   <div className="space-y-4">
-                    <div className="flex items-center gap-3">
+                    {/* Header: suggestion + trend + score */}
+                    <div className="flex items-center gap-3 flex-wrap">
                       <span className={`px-4 py-1.5 rounded-full text-sm font-bold ${suggestionStyle[analysis.suggestion]}`}>{analysis.suggestionTH}</span>
                       <span className={`font-medium ${trendColor[analysis.trend]}`}>{analysis.trendTH}</span>
                       <span className="ml-auto text-slate-400 text-sm">Score <span className="text-white font-bold">{analysis.score}/10</span></span>
@@ -630,42 +637,126 @@ export default function Home() {
                     <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
                       <div className="h-full rounded-full bg-gradient-to-r from-red-500 via-yellow-500 to-green-500" style={{ width: `${analysis.score * 10}%` }} />
                     </div>
-                    <p className="text-sm text-slate-300 leading-relaxed">{analysis.summary}</p>
-                    <div className="grid grid-cols-3 gap-2 text-center text-sm">
-                      <div className="bg-green-900/30 border border-green-800 rounded-lg p-2">
-                        <p className="text-xs text-slate-400 mb-1">จุดเข้า</p>
-                        <p className="text-green-300 font-medium text-xs">${analysis.entryZone.min?.toFixed(2)}</p>
-                        <p className="text-green-300 font-medium text-xs">– ${analysis.entryZone.max?.toFixed(2)}</p>
+
+                    {/* TL;DR */}
+                    {analysis.tldr && (
+                      <div className="bg-blue-950/50 border border-blue-800/60 rounded-lg p-3">
+                        <p className="text-xs text-blue-400 font-medium mb-1">⚡ สรุปสั้น</p>
+                        <p className="text-sm text-blue-100 leading-relaxed">{analysis.tldr}</p>
                       </div>
-                      <div className="bg-blue-900/30 border border-blue-800 rounded-lg p-2">
-                        <p className="text-xs text-slate-400 mb-1">เป้าหมาย</p>
-                        <p className="text-blue-300 font-medium">${analysis.targetPrice?.toFixed(2)}</p>
-                      </div>
-                      <div className="bg-red-900/30 border border-red-800 rounded-lg p-2">
-                        <p className="text-xs text-slate-400 mb-1">Cut Loss</p>
-                        <p className="text-red-300 font-medium">${analysis.stopLoss?.toFixed(2)}</p>
-                      </div>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-400">Risk/Reward</span>
-                      <span className="text-white">1 : {analysis.riskReward?.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-400">ระยะเวลาถือ</span>
-                      <span className="text-white">{analysis.timeframe}</span>
-                    </div>
+                    )}
+
+                    {/* Summary */}
                     <div>
-                      <p className="text-xs text-slate-400 mb-2">สัญญาณ</p>
+                      <p className="text-xs text-slate-400 mb-1">ภาพรวม</p>
+                      <p className="text-sm text-slate-300 leading-relaxed">{analysis.summary}</p>
+                    </div>
+
+                    {/* Technical + Fundamental detail */}
+                    {analysis.technicalDetail && (
+                      <div className="bg-slate-800/40 rounded-lg p-3 space-y-2">
+                        <div>
+                          <p className="text-xs text-purple-400 font-medium mb-1">📊 Technical Setup</p>
+                          <p className="text-xs text-slate-300 leading-relaxed">{analysis.technicalDetail}</p>
+                        </div>
+                        {analysis.fundamentalDetail && (
+                          <div>
+                            <p className="text-xs text-emerald-400 font-medium mb-1">📋 Fundamental</p>
+                            <p className="text-xs text-slate-300 leading-relaxed">{analysis.fundamentalDetail}</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Entry Strategy */}
+                    <div>
+                      <p className="text-xs text-slate-400 mb-2">กลยุทธ์การเข้า</p>
+                      <div className="grid grid-cols-2 gap-2 mb-2">
+                        <div className="bg-green-900/30 border border-green-800 rounded-lg p-2 text-center">
+                          <p className="text-xs text-slate-400 mb-0.5">เข้าครั้งแรก</p>
+                          <p className="text-green-300 font-bold">${analysis.entryStrategy?.first?.toFixed(2)}</p>
+                        </div>
+                        <div className="bg-green-900/20 border border-green-900 rounded-lg p-2 text-center">
+                          <p className="text-xs text-slate-400 mb-0.5">เข้าครั้งสอง</p>
+                          <p className="text-green-400 font-bold">${analysis.entryStrategy?.second?.toFixed(2)}</p>
+                        </div>
+                      </div>
+                      {analysis.entryStrategy?.reason && (
+                        <p className="text-xs text-slate-400 leading-relaxed">{analysis.entryStrategy.reason}</p>
+                      )}
+                    </div>
+
+                    {/* Targets */}
+                    <div>
+                      <p className="text-xs text-slate-400 mb-2">เป้าหมายราคา</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-blue-900/30 border border-blue-800 rounded-lg p-2">
+                          <p className="text-xs text-slate-400 mb-0.5">TP1 (conservative)</p>
+                          <p className="text-blue-300 font-bold">${analysis.targets?.tp1?.toFixed(2)}</p>
+                          {analysis.targets?.tp1Reason && <p className="text-xs text-slate-500 mt-0.5">{analysis.targets.tp1Reason}</p>}
+                        </div>
+                        <div className="bg-blue-900/20 border border-blue-900 rounded-lg p-2">
+                          <p className="text-xs text-slate-400 mb-0.5">TP2 (optimistic)</p>
+                          <p className="text-blue-200 font-bold">${analysis.targets?.tp2?.toFixed(2) ?? "-"}</p>
+                          {analysis.targets?.tp2Reason && <p className="text-xs text-slate-500 mt-0.5">{analysis.targets.tp2Reason}</p>}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Stop Loss */}
+                    <div className="bg-red-900/20 border border-red-900 rounded-lg p-3">
+                      <div className="flex justify-between items-center mb-1">
+                        <p className="text-xs text-slate-400">Cut Loss</p>
+                        <p className="text-red-300 font-bold">${analysis.stopLoss?.toFixed(2)}</p>
+                      </div>
+                      {analysis.stopLossReason && <p className="text-xs text-slate-500">{analysis.stopLossReason}</p>}
+                    </div>
+
+                    {/* Risk/Reward + Timeframe */}
+                    <div className="flex gap-4 text-sm">
+                      <div className="flex-1 bg-slate-800/50 rounded-lg p-2 text-center">
+                        <p className="text-xs text-slate-400 mb-0.5">Risk/Reward</p>
+                        <p className="text-white font-bold">1 : {analysis.riskReward?.toFixed(2)}</p>
+                      </div>
+                      <div className="flex-1 bg-slate-800/50 rounded-lg p-2 text-center">
+                        <p className="text-xs text-slate-400 mb-0.5">ถือ</p>
+                        <p className="text-white font-bold">{analysis.timeframe}</p>
+                      </div>
+                    </div>
+
+                    {/* Exit Strategy */}
+                    {analysis.exitStrategy && (
+                      <div className="bg-slate-800/40 rounded-lg p-3">
+                        <p className="text-xs text-yellow-400 font-medium mb-1">🚪 กลยุทธ์การออก</p>
+                        <p className="text-xs text-slate-300 leading-relaxed">{analysis.exitStrategy}</p>
+                      </div>
+                    )}
+
+                    {/* Signals */}
+                    <div>
+                      <p className="text-xs text-slate-400 mb-2">สัญญาณบวก</p>
                       <ul className="space-y-1">
-                        {analysis.signals.map((s, i) => <li key={i} className="text-xs text-green-300 flex gap-1.5"><span>✓</span>{s}</li>)}
+                        {analysis.signals.map((s, i) => <li key={i} className="text-xs text-green-300 flex gap-1.5"><span className="shrink-0">✓</span>{s}</li>)}
                       </ul>
                     </div>
+
+                    {/* Risks */}
                     <div>
                       <p className="text-xs text-slate-400 mb-2">ความเสี่ยง</p>
                       <ul className="space-y-1">
-                        {analysis.risks.map((r, i) => <li key={i} className="text-xs text-red-300 flex gap-1.5"><span>⚠</span>{r}</li>)}
+                        {analysis.risks.map((r, i) => <li key={i} className="text-xs text-red-300 flex gap-1.5"><span className="shrink-0">⚠</span>{r}</li>)}
                       </ul>
                     </div>
+
+                    {/* Catalysts */}
+                    {analysis.catalysts?.length > 0 && (
+                      <div>
+                        <p className="text-xs text-slate-400 mb-2">Catalyst (1-2 สัปดาห์)</p>
+                        <ul className="space-y-1">
+                          {analysis.catalysts.map((c, i) => <li key={i} className="text-xs text-yellow-300 flex gap-1.5"><span className="shrink-0">⚡</span>{c}</li>)}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
