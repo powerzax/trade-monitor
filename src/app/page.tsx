@@ -599,7 +599,7 @@ export default function Home() {
               <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="font-semibold text-white">AI วิเคราะห์</h3>
-                  <span className="text-xs text-slate-500">by Gemini 2.0 Flash</span>
+                  <span className="text-xs text-slate-500">by LLaMA 3.3 70B</span>
                 </div>
                 {analyzing && (
                   <div className="flex items-center gap-2 text-slate-400 text-sm">
