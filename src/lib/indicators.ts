@@ -1,7 +1,9 @@
 export type SignalKey =
   | "rsi_oversold" | "rsi_overbought" | "macd_rising" | "macd_falling" | "macd_cross_up" | "macd_cross_down"
   | "above_ma20" | "below_ma20" | "above_ma50" | "below_ma50" | "near_support" | "near_resistance"
-  | "volume_bullish" | "volume_bearish" | "weekly_bull" | "weekly_bear";
+  | "volume_bullish" | "volume_bearish" | "weekly_bull" | "weekly_bear"
+  | "supertrend_up" | "supertrend_down" | "money_in" | "money_out"
+  | "mfi_low" | "mfi_high" | "stochrsi_low" | "stochrsi_high";
 
 export type SignalWeights = Partial<Record<SignalKey, number>>;
 
@@ -76,6 +78,25 @@ export function computeIndicators(
   const weeklyVolRatio = weeklyAvgVol && weeklyVolumes.length
     ? weeklyVolumes[weeklyVolumes.length - 1] / weeklyAvgVol : null;
 
+  // --- ATR / Supertrend / money flow / StochRSI ---
+  const atrArr = computeATR(highs, lows, closes, 14);
+  const atr = atrArr[atrArr.length - 1];
+  const atrPct = (atr / price) * 100;
+  const atrHist = atrArr.slice(-100).map((a, i, arr) => (a / closes[n - arr.length + i]) * 100).sort((a, b) => a - b);
+  const atrMedianPct = atrHist[Math.floor(atrHist.length / 2)] ?? atrPct;
+  const st = computeSupertrend(highs, lows, closes, 10, 3);
+  const stDir = st.dir[n - 1];
+  let stDays = 0;
+  for (let i = n - 1; i >= 0 && st.dir[i] === stDir; i--) stDays++;
+  const obv = computeOBV(closes, volumes);
+  const obvMa = avg(obv.slice(-20));
+  const obvSlope = obv[n - 1] - obv[Math.max(0, n - 11)];
+  const moneyFlow: "in" | "out" | "neutral" = obv[n - 1] > obvMa && obvSlope > 0 ? "in" : obv[n - 1] < obvMa && obvSlope < 0 ? "out" : "neutral";
+  const mfi = computeMFI(highs, lows, closes, volumes, 14);
+  const stoch = computeStochRSI(closes, 14, 14, 3);
+  const stochK = stoch.k[stoch.k.length - 1] ?? 50;
+  const stochPrev = stoch.k[stoch.k.length - 2] ?? stochK;
+
   // --- Confluence: each signal votes ±1, scaled by its backtested weight ---
   const signals: { key: SignalKey; dir: 1 | -1; label: string }[] = [];
   const add = (key: SignalKey, dir: 1 | -1, label: string) => signals.push({ key, dir, label });
@@ -102,6 +123,12 @@ export function computeIndicators(
 
   if (weeklyTrend === "bullish") add("weekly_bull", 1, "Weekly trend bullish");
   else if (weeklyTrend === "bearish") add("weekly_bear", -1, "Weekly trend bearish");
+
+  if (stDir === 1) add("supertrend_up", 1, "Supertrend ขาขึ้น"); else add("supertrend_down", -1, "Supertrend ขาลง");
+  if (moneyFlow === "in") add("money_in", 1, "เงินไหลเข้า (OBV)"); else if (moneyFlow === "out") add("money_out", -1, "เงินไหลออก (OBV)");
+  if (mfi != null && mfi < 25) add("mfi_low", 1, `MFI ${mfi.toFixed(0)} ต่ำ`); else if (mfi != null && mfi > 75) add("mfi_high", -1, `MFI ${mfi.toFixed(0)} สูง`);
+  if (stochK < 20 && stochK > stochPrev) add("stochrsi_low", 1, "StochRSI กลับตัวจากโซนต่ำ");
+  else if (stochK > 80 && stochK < stochPrev) add("stochrsi_high", -1, "StochRSI กลับตัวจากโซนสูง");
 
   const weighted = signals.map((x) => ({ ...x, weight: weights?.[x.key] ?? 1 }));
   const confluence = weighted.reduce((a, x) => a + x.dir * x.weight, 0) + (rsi > rsiPrev ? 0.5 : -0.5);
@@ -139,6 +166,19 @@ export function computeIndicators(
     adx: adx ? Math.round(adx * 10) / 10 : null,
     trendStrength,
     weekly: { trend: weeklyTrend, rsi: weeklyRsi, volRatio: weeklyVolRatio ? Math.round(weeklyVolRatio * 100) / 100 : null },
+    atr: Math.round(atr * 100) / 100,
+    atrPct: Math.round(atrPct * 100) / 100,
+    supertrend: { dir: stDir, days: stDays, line: Math.round(st.line[n - 1] * 100) / 100 },
+    moneyFlow,
+    mfi: mfi != null ? Math.round(mfi * 10) / 10 : null,
+    stochRsi: Math.round(stochK * 10) / 10,
+    stopZone: { upper: Math.round((price - 1.5 * atr) * 100) / 100, lower: Math.round((price - 2.5 * atr) * 100) / 100 },
+    plain: {
+      trend: { state: stDir === 1 ? "up" : "down", days: stDays },
+      flow: moneyFlow,
+      timing: stochK < 20 || rsi < 35 ? "good" : stochK > 80 || rsi > 68 ? "hot" : stochK < 50 && stochK > stochPrev ? "ok" : "wait",
+      volatility: { level: atrPct > atrMedianPct * 1.3 ? "high" : atrPct < atrMedianPct * 0.75 ? "low" : "normal", atr: Math.round(atr * 100) / 100, stopDistance: Math.round(1.5 * atr * 100) / 100 },
+    },
     confluence: { score: confluenceScore, signal: confluenceSignal, details: confluenceDetails, signals: weighted.map(({ key, dir, weight }) => ({ key, dir, weight })) },
   };
 }
@@ -296,4 +336,63 @@ export function computeProjection(
     earningsInHorizon: jumpVar > 0,
     points,
   };
+}
+
+export function computeATR(highs: number[], lows: number[], closes: number[], period = 14): number[] {
+  const tr = highs.map((h, i) => i === 0 ? h - lows[i] : Math.max(h - lows[i], Math.abs(h - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
+  const out: number[] = [];
+  let a = avg(tr.slice(0, period));
+  for (let i = 0; i < tr.length; i++) {
+    if (i >= period) a = (a * (period - 1) + tr[i]) / period;
+    out.push(a);
+  }
+  return out;
+}
+
+// Supertrend: an ATR band that flips sides when price closes through it; dir 1 = up, -1 = down.
+export function computeSupertrend(highs: number[], lows: number[], closes: number[], period = 10, mult = 3) {
+  const atr = computeATR(highs, lows, closes, period);
+  const n = closes.length;
+  const line: number[] = new Array(n);
+  const dir: (1 | -1)[] = new Array(n);
+  let upper = 0, lower = 0;
+  for (let i = 0; i < n; i++) {
+    const mid = (highs[i] + lows[i]) / 2;
+    const bu = mid + mult * atr[i], bl = mid - mult * atr[i];
+    if (i === 0) { upper = bu; lower = bl; dir[0] = 1; line[0] = bl; continue; }
+    upper = bu < upper || closes[i - 1] > upper ? bu : upper;
+    lower = bl > lower || closes[i - 1] < lower ? bl : lower;
+    dir[i] = dir[i - 1] === 1 ? (closes[i] < lower ? -1 : 1) : (closes[i] > upper ? 1 : -1);
+    line[i] = dir[i] === 1 ? lower : upper;
+  }
+  return { line, dir };
+}
+
+export function computeOBV(closes: number[], volumes: number[]): number[] {
+  const out = [0];
+  for (let i = 1; i < closes.length; i++) out.push(out[i - 1] + (closes[i] > closes[i - 1] ? volumes[i] : closes[i] < closes[i - 1] ? -volumes[i] : 0));
+  return out;
+}
+
+export function computeMFI(highs: number[], lows: number[], closes: number[], volumes: number[], period = 14): number | null {
+  const n = closes.length;
+  if (n <= period || volumes.slice(-period).every((v) => !v)) return null;
+  let pos = 0, neg = 0;
+  for (let i = n - period; i < n; i++) {
+    const tp = (highs[i] + lows[i] + closes[i]) / 3, prev = (highs[i - 1] + lows[i - 1] + closes[i - 1]) / 3;
+    if (tp > prev) pos += tp * volumes[i]; else if (tp < prev) neg += tp * volumes[i];
+  }
+  return neg === 0 ? 100 : 100 - 100 / (1 + pos / neg);
+}
+
+export function computeStochRSI(closes: number[], rsiPeriod = 14, stochPeriod = 14, smooth = 3) {
+  const rsi = computeRSI(closes, rsiPeriod);
+  const raw: number[] = [];
+  for (let i = stochPeriod - 1; i < rsi.length; i++) {
+    const w = rsi.slice(i - stochPeriod + 1, i + 1);
+    const lo = Math.min(...w), hi = Math.max(...w);
+    raw.push(hi === lo ? 50 : ((rsi[i] - lo) / (hi - lo)) * 100);
+  }
+  const k = raw.map((_, i) => avg(raw.slice(Math.max(0, i - smooth + 1), i + 1)));
+  return { k };
 }

@@ -31,7 +31,7 @@ async function history(ticker: string) {
 // A signal's weight grows with its edge over the base rate and shrinks toward 0 when it misleads.
 export async function runCalibration(): Promise<Calibration> {
   const tickers = [...US, ...CRYPTO];
-  const tally = new Map<SignalKey, { count: number; wins: number; sum: number }>();
+  const tally = new Map<SignalKey, { count: number; wins: number; sum: number; dir: number }>();
   let ups = 0, samples = 0, symbols = 0;
 
   for (let i = 0; i < tickers.length; i += 6) {
@@ -51,7 +51,7 @@ export async function runCalibration(): Promise<Calibration> {
         samples++;
         if (fwd > 0) ups++;
         for (const s of ind.confluence.signals) {
-          const e = tally.get(s.key) ?? { count: 0, wins: 0, sum: 0 };
+          const e = tally.get(s.key) ?? { count: 0, wins: 0, sum: 0, dir: s.dir };
           e.count++;
           if (s.dir * fwd > 0) e.wins++;
           e.sum += s.dir * fwd;
@@ -65,7 +65,7 @@ export async function runCalibration(): Promise<Calibration> {
   const weights: SignalWeights = {};
   const stats: Calibration["stats"] = {};
   for (const [key, e] of tally) {
-    const bullish = !/oversold|overbought/.test(key) ? !/falling|down|below|resistance|bearish|bear$/.test(key) : key === "rsi_oversold";
+    const bullish = e.dir > 0;
     const hitRate = e.wins / e.count;
     const edge = hitRate - (bullish ? baseUp : 1 - baseUp);
     const weight = e.count < 60 ? 1 : Math.round(Math.max(0, Math.min(2.5, 1 + edge * 10)) * 100) / 100;

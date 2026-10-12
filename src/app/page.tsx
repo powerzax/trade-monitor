@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo } from "react";
 import dynamic from "next/dynamic";
 
 const CandleChart = dynamic(() => import("@/components/CandleChart"), { ssr: false });
-import type { ProjectionPoint, PriceLine } from "@/components/CandleChart";
+import type { ProjectionPoint, PriceLine, ChartMarker } from "@/components/CandleChart";
 import { computeHoldings, type Position } from "@/lib/portfolio";
 import { Term } from "@/components/Term";
 
@@ -61,10 +61,25 @@ interface StockData {
     trendStrength?: string;
     weekly?: { trend: string; rsi: number | null; volRatio: number | null };
     confluence?: { score: number; signal: string; details: string[] };
+    atr?: number;
+    atrPct?: number;
+    supertrend?: { dir: number; days: number; line: number };
+    moneyFlow?: "in" | "out" | "neutral";
+    mfi?: number | null;
+    stochRsi?: number;
+    stopZone?: { upper: number; lower: number };
+    plain?: {
+      trend: { state: "up" | "down"; days: number };
+      flow: "in" | "out" | "neutral";
+      timing: "good" | "ok" | "wait" | "hot";
+      volatility: { level: "low" | "normal" | "high"; atr: number; stopDistance: number };
+    };
   } | null;
   analystData: AnalystData | null;
   beta?: number | null;
   earnings?: { date: string; daysUntil: number } | null;
+  supertrend?: { time: number; value: number; dir: number }[];
+  markers?: ChartMarker[];
   sector?: { label: string; etf: string; rs20: number | null; rs60: number | null; stockPerf20d: number | null; sectorPerf20d: number | null } | null;
   projection?: { horizon: number; sigmaDaily: number; muDaily: number; earningsInHorizon: boolean; points: ProjectionPoint[] } | null;
   market?: {
@@ -422,6 +437,18 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const [proMode, setProMode] = useState(false);
+
+  useEffect(() => {
+    try { setProMode(localStorage.getItem("tm.pro") === "1"); } catch {}
+  }, []);
+
+  function toggleMode() {
+    setProMode((v) => {
+      try { localStorage.setItem("tm.pro", v ? "0" : "1"); } catch {}
+      return !v;
+    });
+  }
   const [chat, setChat] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
@@ -1364,18 +1391,27 @@ export default function Home() {
             {/* Chart */}
             <div className="card spotlight p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-sm font-medium text-slate-400">กราฟราคา 180 วัน{data.projection && <span className="text-violet-300"> + <Term id="projection">กรวยแนวโน้ม {data.projection.horizon} วันทำการ</Term></span>}</h3>
-                <div className="flex flex-wrap gap-3 text-[11px] text-slate-400">
-                  {data.projection && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t-2 border-dashed border-violet-200" />กรณีกลาง</span>}
-                  {data.projection && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t border-violet-400/70" />ช่วง 50%</span>}
-                  {data.projection && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t border-dashed border-violet-400/40" />ช่วง 80%</span>}
-                  {holdings.some((x) => x.symbol === data.symbol) && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t-2 border-amber-300" />ต้นทุน</span>}
+                <h3 className="text-sm font-medium text-slate-400">กราฟราคา 1 ปี{data.projection && <span className="text-violet-300"> + <Term id="projection">กรวยแนวโน้ม {data.projection.horizon} วันทำการ</Term></span>}</h3>
+                <div className="flex glass rounded-full p-0.5 text-xs">
+                  <button onClick={() => proMode && toggleMode()} className={`rounded-full px-3 py-1 transition ${!proMode ? "glass-accent text-white" : "text-slate-400"}`}>โหมดง่าย</button>
+                  <button onClick={() => !proMode && toggleMode()} className={`rounded-full px-3 py-1 transition ${proMode ? "glass-accent text-white" : "text-slate-400"}`}>โหมดเทรดเดอร์</button>
                 </div>
+              </div>
+              <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400">
+                <span className="flex items-center gap-1.5"><span className="inline-block h-0.5 w-5 rounded bg-gradient-to-r from-emerald-400 to-rose-400" />เส้นทิศทาง: เขียว = ขาขึ้น แดง = ขาลง</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-5 rounded-sm border-t border-dashed border-pink-400 bg-pink-400/25" />โซน Stop: หลุดลงมาตรงนี้ = ผิดแผน</span>
+                <span className="flex items-center gap-1.5"><span className="text-emerald-300">▲</span><span className="text-rose-300">▼</span> ลูกศร = จุดเปลี่ยนเทรนด์ ตัวเลขคือราคา 10 วันต่อมา</span>
+                {data.projection && <span className="flex items-center gap-1.5"><span className="inline-block w-5 border-t-2 border-dashed border-violet-200" />กรวยแนวโน้ม</span>}
+                {holdings.some((x) => x.symbol === data.symbol) && <span className="flex items-center gap-1.5"><span className="inline-block w-5 border-t-2 border-amber-300" />ต้นทุนของคุณ</span>}
               </div>
               <CandleChart
                 candles={data.candles}
                 indicators={data.indicators}
                 projection={data.projection?.points}
+                supertrend={data.supertrend}
+                stopZone={data.indicators?.stopZone}
+                markers={data.markers}
+                pro={proMode}
                 priceLines={(() => {
                   const lines: PriceLine[] = [];
                   const h = holdings.find((x) => x.symbol === data.symbol);
@@ -1388,9 +1424,65 @@ export default function Home() {
                   return lines;
                 })()}
               />
+              {data.markers && (() => {
+                const shown = data.markers.filter((m) => (proMode || m.kind === "trend") && m.fwd10 != null);
+                if (!shown.length) return null;
+                const right = shown.filter((m) => m.dir * m.fwd10! > 0).length;
+                return <p className="mt-2 text-xs text-slate-400">📏 ลูกศร{proMode ? "ทั้งหมด" : "เปลี่ยนเทรนด์"}ในกราฟนี้ทายถูก <b className={right / shown.length >= 0.5 ? "text-emerald-300" : "text-rose-300"}>{right} จาก {shown.length} ครั้ง</b> (ดูราคา 10 วันหลังลูกศร){right / shown.length < 0.5 && " ตัวนี้สัญญาณหลอกบ่อย ระวังการเข้าตามลูกศรอย่างเดียว"}</p>;
+              })()}
               {data.projection?.earningsInHorizon && <p className="mt-2 text-xs text-amber-200">⚠ มีประกาศงบในช่วงนี้ กรวยจึงกว้างขึ้นหลังวันประกาศ ราคาอาจกระโดดได้แรง</p>}
               {data.projection && <p className="mt-2 text-[11px] text-slate-500">กรวยคำนวณจากความผันผวนจริง {data.projection.sigmaDaily}%/วัน เอียงตาม Confluence Score และสภาวะตลาด เป็นช่วงความน่าจะเป็นทางสถิติ ไม่ใช่การทำนายราคาแน่นอน</p>}
             </div>
+
+            {/* Plain-language readout */}
+            {data.indicators?.plain && (() => {
+              const p = data.indicators.plain;
+              const ind = data.indicators;
+              const rows = [
+                {
+                  tone: p.trend.state === "up" ? "green" : "red",
+                  title: `ทิศทาง: ${p.trend.state === "up" ? "ขาขึ้น" : "ขาลง"}`,
+                  desc: `เส้นทิศทางเป็นสี${p.trend.state === "up" ? "เขียว" : "แดง"}มา ${p.trend.days} วัน${p.trend.days <= 3 ? " (เพิ่งเปลี่ยน ยังไม่ยืนยัน)" : ""}`,
+                  pro: `Supertrend(10,3) $${ind.supertrend?.line}`,
+                },
+                {
+                  tone: p.flow === "in" ? "green" : p.flow === "out" ? "red" : "gray",
+                  title: p.flow === "in" ? "เงินไหลเข้า" : p.flow === "out" ? "เงินไหลออก" : "เงินทรงตัว",
+                  desc: p.flow === "in" ? "วันที่ราคาขึ้นมีคนซื้อหนักกว่าวันที่ลง" : p.flow === "out" ? "วันที่ราคาลงมีคนขายหนักกว่าวันที่ขึ้น" : "แรงซื้อกับแรงขายพอๆ กัน",
+                  pro: `OBV · MFI ${ind.mfi ?? "–"}`,
+                },
+                {
+                  tone: p.timing === "good" ? "green" : p.timing === "ok" ? "green" : p.timing === "hot" ? "red" : "yellow",
+                  title: `จังหวะเข้า: ${p.timing === "good" ? "ดี" : p.timing === "ok" ? "พอได้" : p.timing === "hot" ? "ร้อนเกินไป" : "ยังไม่ดี"}`,
+                  desc: p.timing === "good" ? "ราคาย่อตัวลงมาในโซนที่มักเด้งกลับ" : p.timing === "ok" ? "เริ่มฟื้นตัวจากจุดต่ำ" : p.timing === "hot" ? "ขึ้นมาเร็วเกินไป มักพักตัวก่อนไปต่อ" : "อยู่กลางทาง รอย่อลงมาก่อนดีกว่า",
+                  pro: `StochRSI ${ind.stochRsi} · RSI ${ind.rsi}`,
+                },
+                {
+                  tone: p.volatility.level === "high" ? "yellow" : "gray",
+                  title: `ความผันผวน: ${p.volatility.level === "high" ? "สูง" : p.volatility.level === "low" ? "ต่ำ" : "ปกติ"}`,
+                  desc: `แกว่งวันละราว $${p.volatility.atr} ควรตั้ง Stop ห่างจากราคาอย่างน้อย $${p.volatility.stopDistance} (≈ $${ind.stopZone?.upper})`,
+                  pro: `ATR(14) ${ind.atrPct}%`,
+                },
+              ] as const;
+              const dot = { green: "bg-emerald-400 shadow-emerald-400/60", red: "bg-rose-400 shadow-rose-400/60", yellow: "bg-amber-300 shadow-amber-300/60", gray: "bg-slate-400 shadow-slate-400/40" };
+              return (
+                <div className="card spotlight p-5">
+                  <h3 className="mb-3 font-semibold text-white">🚦 อ่านกราฟง่ายๆ</h3>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {rows.map((r) => (
+                      <div key={r.title} className="flex items-start gap-3 rounded-xl bg-white/[0.03] p-3">
+                        <span className={`mt-1 h-3 w-3 shrink-0 rounded-full shadow-[0_0_10px] ${dot[r.tone]}`} />
+                        <div>
+                          <p className="font-medium text-white">{r.title}</p>
+                          <p className="text-sm text-slate-400">{r.desc}</p>
+                          {proMode && <p className="mt-0.5 font-mono text-[11px] text-violet-300/80">{r.pro}</p>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Ask AI */}
             <div id="ask-ai" className="card spotlight scroll-mt-28 p-5">

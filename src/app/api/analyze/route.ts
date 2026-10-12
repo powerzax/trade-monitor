@@ -29,6 +29,14 @@ Volume Analysis:
 - Volume Pattern: ${ind.volumePattern === "bullish" ? "Bullish (ราคาขึ้น+volume สูง)" : ind.volumePattern === "bearish" ? "Bearish (ราคาลง+volume สูง)" : "Neutral/Weak"}
 - Avg Volume 20d: ${ind.avgVolume20d?.toLocaleString() ?? "N/A"}` : "";
 
+  const flowSection = ind?.plain ? `
+ทิศทาง/เงินทุน/จังหวะ:
+- Supertrend: ${ind.supertrend.dir === 1 ? "ขาขึ้น" : "ขาลง"} ต่อเนื่อง ${ind.supertrend.days} วัน (เส้นอยู่ที่ $${ind.supertrend.line})
+- เงินไหล (OBV): ${ind.moneyFlow === "in" ? "ไหลเข้า" : ind.moneyFlow === "out" ? "ไหลออก" : "ทรงตัว"} | MFI: ${ind.mfi ?? "N/A"} | StochRSI: ${ind.stochRsi}
+- ความผันผวน ATR(14): $${ind.atr}/วัน (${ind.atrPct}%) ระดับ${ind.plain.volatility.level === "high" ? "สูงกว่าปกติ" : ind.plain.volatility.level === "low" ? "ต่ำกว่าปกติ" : "ปกติ"}
+- Stop loss ตามความผันผวน (ราคา − 1.5×ATR): $${ind.stopZone.upper} | โซน stop: $${ind.stopZone.lower}–$${ind.stopZone.upper}
+กฎ stop loss: ใช้ค่าตาม ATR ข้างบนเป็นหลัก ปรับให้อยู่ใต้แนวรับได้ แต่ห้ามห่างจากราคาน้อยกว่า 1×ATR ($${ind.atr}) เพราะจะโดนสะบัดหลุดง่าย` : "";
+
   const mk = data.market;
   const marketSection = mk ? `
 ตลาดรวม (${mk.regime === "risk_on" ? "Risk-on เอื้อต่อการถือ" : mk.regime === "risk_off" ? "Risk-off ระวัง" : "กลางๆ"}):
@@ -110,7 +118,7 @@ Technical Indicators:
 - ราคาเทียบ MA: ${data.price > ind?.ma20 ? "เหนือ MA20 ✓" : "ใต้ MA20 ✗"} ${ind?.ma50 ? data.price > ind.ma50 ? "| เหนือ MA50 ✓" : "| ใต้ MA50 ✗" : ""} ${ind?.ma200 ? data.price > ind.ma200 ? "| เหนือ MA200 ✓ (Bull market)" : "| ใต้ MA200 ✗ (Bear market)" : ""}
 - แนวรับ (Swing Low): $${ind?.support?.map((s: number) => s.toFixed(2)).join(", ")}
 - แนวต้าน (Swing High): $${ind?.resistance?.map((r: number) => r.toFixed(2)).join(", ")}
-${volumeSection}${trendStrengthSection}${weeklySection}${confluenceSection}${marketSection}${sectorSection}${earningsSection}${projectionSection}${positionSection}${lessonSection}${analystSection}${fearGreedSection}${newsSection}
+${volumeSection}${flowSection}${trendStrengthSection}${weeklySection}${confluenceSection}${marketSection}${sectorSection}${earningsSection}${projectionSection}${positionSection}${lessonSection}${analystSection}${fearGreedSection}${newsSection}
 
 วิเคราะห์ครบทุกมิติ แล้วตอบเป็น JSON เท่านั้น (ห้ามมีข้อความนอก JSON) ฟิลด์ราคาและตัวเลขทุกตัวต้องเป็น number ล้วน ห้ามใส่ $ หรือช่วงราคา:
 {

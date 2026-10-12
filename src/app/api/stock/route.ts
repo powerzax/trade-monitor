@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchChart, fetchQuoteSummary, fetchMarketRegime, dayKey, parseCloses } from "@/lib/yahoo";
-import { computeIndicators, computeProjection } from "@/lib/indicators";
+import { computeIndicators, computeProjection, computeSupertrend } from "@/lib/indicators";
 import { getCalibration } from "@/lib/calibrate";
 
 async function fetchYahoo(ticker: string, interval = "1d", days = 180) {
@@ -78,7 +78,7 @@ export async function GET(req: NextRequest) {
     const ticker = isCrypto ? `${symbol.toUpperCase()}-USD` : symbol.toUpperCase();
 
     const [chartData, weeklyData, fundamentals, fearGreed, regime, calibration] = await Promise.all([
-      fetchYahoo(ticker, "1d", 180),
+      fetchYahoo(ticker, "1d", 400),
       fetchYahoo(ticker, "1wk", 365).catch(() => null),
       isCrypto ? null : fetchFundamentals(ticker),
       fetchFearGreed(),
@@ -183,6 +183,25 @@ export async function GET(req: NextRequest) {
       ? { date: new Date(earnTs * 1000).toISOString().slice(0, 10), daysUntil: Math.ceil((earnTs * 1000 - Date.now()) / 86400000) }
       : null;
 
+    // Supertrend line for the chart, and arrows where the trend flipped or the score crossed ±3,
+    // each tagged with what price did over the next 10 sessions.
+    const st = computeSupertrend(highs, lows, closes, 10, 3);
+    const supertrend = candles.map((c, i) => ({ time: c.time, value: Math.round(st.line[i] * 100) / 100, dir: st.dir[i] })).slice(20);
+    const markers: { time: number; dir: 1 | -1; kind: "trend" | "score"; fwd10: number | null }[] = [];
+    const fwd = (i: number) => i + 10 < closes.length ? Math.round(((closes[i + 10] - closes[i]) / closes[i]) * 1000) / 10 : null;
+    for (let i = 21; i < candles.length; i++) {
+      if (st.dir[i] !== st.dir[i - 1]) markers.push({ time: candles[i].time, dir: st.dir[i], kind: "trend", fwd10: fwd(i) });
+    }
+    let prevScore = 0, lastScoreAt = -99;
+    for (let i = Math.max(60, candles.length - 260); i < candles.length; i++) {
+      const sc = computeIndicators(closes.slice(0, i + 1), highs.slice(0, i + 1), lows.slice(0, i + 1), volumes.slice(0, i + 1), [], [], calibration?.weights)?.confluence.score ?? 0;
+      const fresh = i - lastScoreAt >= 10;
+      if (fresh && sc >= 3 && prevScore < 3) { markers.push({ time: candles[i].time, dir: 1, kind: "score", fwd10: fwd(i) }); lastScoreAt = i; }
+      if (fresh && sc <= -3 && prevScore > -3) { markers.push({ time: candles[i].time, dir: -1, kind: "score", fwd10: fwd(i) }); lastScoreAt = i; }
+      prevScore = sc;
+    }
+    markers.sort((a, b) => a.time - b.time);
+
     const sector = await sectorStrength(ticker, isCrypto, fundamentals?.assetProfile, closes);
 
     const projection = computeProjection(
@@ -198,6 +217,8 @@ export async function GET(req: NextRequest) {
       beta,
       earnings,
       sector,
+      supertrend,
+      markers,
       projection,
       market: { spy: regime.spy, qqq: regime.qqq, vix: regime.vix, regime: regime.regime },
       symbol: ticker,
