@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 
 const CandleChart = dynamic(() => import("@/components/CandleChart"), { ssr: false });
 import type { ProjectionPoint, PriceLine } from "@/components/CandleChart";
+import { computeHoldings, type Position } from "@/lib/portfolio";
 
 const POPULAR = [
   { symbol: "AAPL", label: "AAPL", crypto: false },
@@ -84,27 +85,6 @@ interface AnalysisNewsItem {
   title: string;
   sentiment: "positive" | "negative" | "neutral";
   impact: string;
-}
-
-interface Position {
-  id: number;
-  symbol: string;
-  crypto: boolean;
-  name: string | null;
-  price: number;
-  qty: number;
-  bought_at: string;
-}
-
-interface Holding {
-  symbol: string;
-  crypto: boolean;
-  name: string | null;
-  qty: number;
-  cost: number;
-  avgCost: number;
-  firstBought: string;
-  lots: Position[];
 }
 
 interface Analysis {
@@ -189,6 +169,47 @@ interface MarketOverview {
   createdAt?: string;
 }
 
+interface ScanRow {
+  ticker: string;
+  crypto: boolean;
+  name: string;
+  price: number;
+  changePct: number;
+  perf20d: number;
+  score: number;
+  signal: string;
+  rsi: number;
+  adx: number | null;
+  details: string[];
+  spark: number[];
+}
+
+interface ScanResult {
+  scanned: number;
+  rows: ScanRow[];
+  createdAt: string;
+}
+
+interface AccStats {
+  count: number;
+  evaluated: number;
+  winRate: number | null;
+  avgRet7: number | null;
+  avgRet14: number | null;
+  tpHits: number;
+  slHits: number;
+}
+
+interface AccuracyData {
+  overall: AccStats;
+  buy: AccStats;
+  wait: AccStats;
+  avoid: AccStats;
+  buyHighScore: AccStats;
+  buyLowScore: AccStats;
+  recent: { symbol: string; date: string; suggestion: string; score: number | null; entry: number; ret7: number | null; ret14: number | null; hit: "tp" | "sl" | null; correct: boolean | null }[];
+}
+
 interface Quote {
   ticker: string;
   name: string;
@@ -250,24 +271,39 @@ function fmt(v: unknown, digits = 2): string {
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"overview" | "detail" | "portfolio">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "detail" | "portfolio" | "accuracy">("overview");
+  const [scan, setScan] = useState<ScanResult | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [accuracy, setAccuracy] = useState<AccuracyData | null>(null);
+  const [accuracyLoading, setAccuracyLoading] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/screener").then((r) => r.json()).then((j) => setScan(j.scan)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== "accuracy" || accuracy || accuracyLoading) return;
+    setAccuracyLoading(true);
+    fetch("/api/accuracy").then((r) => r.json()).then(setAccuracy).catch(() => {}).finally(() => setAccuracyLoading(false));
+  }, [activeTab, accuracy, accuracyLoading]);
+
+  async function runScanNow() {
+    setScanning(true);
+    try {
+      const j = await fetch("/api/screener", { method: "POST" }).then((r) => r.json());
+      if (j.scan) setScan(j.scan);
+    } finally {
+      setScanning(false);
+    }
+  }
   const [positions, setPositions] = useState<Position[]>([]);
   const [posQuotes, setPosQuotes] = useState<Record<string, Quote>>({});
-  const [posForm, setPosForm] = useState({ symbol: "", crypto: false, price: "", qty: "", boughtAt: new Date().toISOString().slice(0, 10) });
+  const [posForm, setPosForm] = useState({ symbol: "", crypto: false, price: "", qty: "", side: "buy" as "buy" | "sell", boughtAt: new Date().toISOString().slice(0, 10) });
+  const [holdingAdvice, setHoldingAdvice] = useState<Record<string, { action: string; actionTH: string; at: string }>>({});
   const [posError, setPosError] = useState("");
 
-  const holdings: Holding[] = useMemo(() => {
-    const map = new Map<string, Holding>();
-    for (const p of positions) {
-      const h = map.get(p.symbol) ?? { symbol: p.symbol, crypto: p.crypto, name: p.name, qty: 0, cost: 0, avgCost: 0, firstBought: p.bought_at, lots: [] };
-      h.qty += p.qty;
-      h.cost += p.qty * p.price;
-      h.lots.push(p);
-      if (p.bought_at < h.firstBought) h.firstBought = p.bought_at;
-      map.set(p.symbol, h);
-    }
-    return [...map.values()].map((h) => ({ ...h, avgCost: h.cost / h.qty }));
-  }, [positions]);
+  const portfolio = useMemo(() => computeHoldings(positions), [positions]);
+  const holdings = portfolio.open;
 
   useEffect(() => {
     fetch("/api/positions").then((r) => r.json()).then((j) => setPositions(j.positions ?? [])).catch(() => {});
@@ -280,6 +316,13 @@ export default function Home() {
       .then((r) => r.json())
       .then((j) => setPosQuotes(Object.fromEntries((j.quotes ?? []).map((q: Quote) => [q.ticker, q]))))
       .catch(() => {});
+    Promise.all(holdingSymbols.split(",").map((sym) =>
+      fetch(`/api/analysis-cache?symbol=${encodeURIComponent(sym)}`).then((r) => r.json()).then((j) => [sym, j.cache] as const).catch(() => [sym, null] as const)
+    )).then((list) => {
+      const out: Record<string, { action: string; actionTH: string; at: string }> = {};
+      for (const [sym, c] of list) if (c?.result?.positionAdvice) out[sym] = { action: c.result.positionAdvice.action, actionTH: c.result.positionAdvice.actionTH, at: c.createdAt };
+      setHoldingAdvice(out);
+    });
   }, [holdingSymbols]);
 
   async function addPosition(e: React.FormEvent) {
@@ -292,7 +335,7 @@ export default function Home() {
     });
     const j = await res.json();
     if (j.error) return setPosError(j.error);
-    setPositions((prev) => [j.position, ...prev]);
+    setPositions(j.positions ?? []);
     setPosForm((f) => ({ ...f, symbol: "", price: "", qty: "" }));
   }
 
@@ -321,7 +364,7 @@ export default function Home() {
     try {
       const tab = localStorage.getItem("tm.tab");
       const last = JSON.parse(localStorage.getItem("tm.last") ?? "null");
-      if (tab === "detail" || tab === "portfolio") setActiveTab(tab);
+      if (tab === "detail" || tab === "portfolio" || tab === "accuracy") setActiveTab(tab);
       if (last?.symbol) { setQuery(last.symbol); setIsCrypto(!!last.crypto); search(last.symbol, !!last.crypto); }
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -532,6 +575,10 @@ export default function Home() {
               onClick={() => setActiveTab("portfolio")}
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === "portfolio" ? "glass-accent text-white" : "text-slate-400 hover:text-white"}`}
             >💼<span className="hidden sm:inline"> พอร์ตของฉัน</span>{holdings.length > 0 && <span className="ml-1.5 rounded-full bg-white/15 px-1.5 text-[10px]">{holdings.length}</span>}</button>
+            <button
+              onClick={() => setActiveTab("accuracy")}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === "accuracy" ? "glass-accent text-white" : "text-slate-400 hover:text-white"}`}
+            >🎯<span className="hidden sm:inline"> ความแม่น AI</span></button>
           </div>
         </div>
         {(() => {
@@ -580,6 +627,36 @@ export default function Home() {
               >
                 {overviewLoading ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />กำลังวิเคราะห์...</> : overviewData ? "🔄 วิเคราะห์ใหม่" : "🔍 วิเคราะห์ตอนนี้"}
               </button>
+            </div>
+
+            {/* Screener */}
+            <div className="card spotlight p-5">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-white">🔎 สแกนหาตัวน่าเข้า</h3>
+                  <p className="text-xs text-slate-500">ไล่คำนวณ Confluence Score หุ้นใหญ่ 60 ตัว + Crypto 10 ตัว ด้วยสูตรเดียวกับหน้ารายตัว (ไม่ใช้โควตา AI){scan?.createdAt && <> · สแกนล่าสุด {formatTimeAgo(new Date(scan.createdAt))}</>}</p>
+                </div>
+                <button onClick={runScanNow} disabled={scanning} className="glass rounded-xl px-4 py-2 text-sm text-violet-200 hover:bg-violet-500/20 disabled:opacity-50 transition">{scanning ? "กำลังสแกน..." : scan ? "🔄 สแกนใหม่" : "🔎 สแกนตอนนี้"}</button>
+              </div>
+              {scan ? (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                  {scan.rows.slice(0, 10).map((r, i) => (
+                    <button key={r.ticker} onClick={() => openSymbol(r.ticker, r.crypto)} title={r.details.join(" · ")} className="glass spotlight relative overflow-hidden rounded-xl p-3 text-left transition hover:bg-violet-500/10">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-white"><span className="mr-1.5 font-mono text-xs text-slate-500">#{i + 1}</span>{r.ticker.replace(/-USD$/, "")}</span>
+                        <span className={`font-mono text-sm font-bold ${r.score >= 2 ? "text-emerald-300" : r.score <= -2 ? "text-rose-300" : "text-violet-200"}`}>{r.score > 0 ? "+" : ""}{r.score}</span>
+                      </div>
+                      <Sparkline values={r.spark} className="my-1.5 h-8 w-full" />
+                      <div className="flex justify-between font-mono text-[11px] text-slate-400">
+                        <span>RSI {r.rsi}</span>
+                        <span className={r.perf20d >= 0 ? "text-emerald-300" : "text-rose-300"}>20d {r.perf20d >= 0 ? "+" : ""}{r.perf20d}%</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-slate-500">ยังไม่มีผลสแกน กด &quot;สแกนตอนนี้&quot; หรือรอรอบอัตโนมัติ 07:00 น.</p>
+              )}
             </div>
 
             {overviewError && <div className="bg-red-900/30 border border-red-800 rounded-xl p-4 text-red-300 text-sm">{overviewError}</div>}
@@ -783,8 +860,8 @@ export default function Home() {
                 <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
                   <div className="glass rounded-xl p-3"><p className="text-xs text-slate-400">ต้นทุนรวม</p><p className="font-mono text-white">{money(totalCost)}</p></div>
                   <div className="glass rounded-xl p-3"><p className="text-xs text-slate-400">วันนี้</p><p className={`font-mono ${dayPnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{dayPnl >= 0 ? "+" : ""}{money(dayPnl)}</p></div>
-                  <div className="glass rounded-xl p-3"><p className="text-xs text-slate-400">ถืออยู่</p><p className="font-mono text-white">{holdings.length} ตัว</p></div>
-                  <div className="glass rounded-xl p-3"><p className="text-xs text-slate-400">กำไร / ขาดทุน</p><p className="font-mono text-white"><span className="text-emerald-300">{rows.filter((r) => (r.pnl ?? 0) > 0).length}</span> / <span className="text-rose-300">{rows.filter((r) => (r.pnl ?? 0) < 0).length}</span></p></div>
+                  <div className="glass rounded-xl p-3"><p className="text-xs text-slate-400">กำไรที่ขายแล้ว</p><p className={`font-mono ${portfolio.realizedTotal >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{portfolio.realizedTotal >= 0 ? "+" : ""}{money(portfolio.realizedTotal)}</p></div>
+                  <div className="glass rounded-xl p-3"><p className="text-xs text-slate-400">ถือ {holdings.length} ตัว · กำไร / ขาดทุน</p><p className="font-mono text-white"><span className="text-emerald-300">{rows.filter((r) => (r.pnl ?? 0) > 0).length}</span> / <span className="text-rose-300">{rows.filter((r) => (r.pnl ?? 0) < 0).length}</span></p></div>
                 </div>
                 {totalValue > 0 && (
                   <div className="mt-5">
@@ -805,17 +882,33 @@ export default function Home() {
 
               {/* Add position */}
               <form onSubmit={addPosition} className="card spotlight p-5">
-                <h3 className="mb-4 font-semibold text-white">➕ บันทึกการซื้อ</h3>
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                  <h3 className="font-semibold text-white">{posForm.side === "buy" ? "➕ บันทึกการซื้อ" : "➖ บันทึกการขาย"}</h3>
+                  <div className="flex glass rounded-xl p-1 gap-1">
+                    <button type="button" onClick={() => setPosForm((f) => ({ ...f, side: "buy" }))} className={`px-4 py-1.5 rounded-lg text-sm transition ${posForm.side === "buy" ? "bg-emerald-500/80 text-white shadow-lg shadow-emerald-500/30" : "text-slate-400"}`}>ซื้อ</button>
+                    <button type="button" onClick={() => setPosForm((f) => ({ ...f, side: "sell" }))} className={`px-4 py-1.5 rounded-lg text-sm transition ${posForm.side === "sell" ? "bg-rose-500/80 text-white shadow-lg shadow-rose-500/30" : "text-slate-400"}`}>ขาย</button>
+                  </div>
+                </div>
+                {posForm.side === "sell" && holdings.length > 0 && (
+                  <div className="mb-3 flex flex-wrap gap-2 text-xs">
+                    <span className="text-slate-500">เลือกตัวที่ถือ:</span>
+                    {holdings.map((h) => (
+                      <button type="button" key={h.symbol} onClick={() => setPosForm((f) => ({ ...f, symbol: h.symbol.replace(/-USD$/, ""), crypto: h.crypto, qty: String(h.qty), price: posQuotes[h.symbol] ? String(posQuotes[h.symbol].price) : f.price }))} className="glass rounded-full px-3 py-1 hover:bg-rose-500/20 transition">
+                        {h.symbol.replace(/-USD$/, "")} <span className="text-slate-500">({h.qty.toLocaleString(undefined, { maximumFractionDigits: 6 })})</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-3 lg:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
                   <div className="col-span-2 lg:col-span-1 flex glass rounded-xl p-1 gap-1 h-fit">
                     <button type="button" onClick={() => setPosForm((f) => ({ ...f, crypto: false }))} className={`flex-1 px-3 py-1.5 rounded-lg text-sm transition ${!posForm.crypto ? "glass-accent text-white" : "text-slate-400"}`}>หุ้น US</button>
                     <button type="button" onClick={() => setPosForm((f) => ({ ...f, crypto: true }))} className={`flex-1 px-3 py-1.5 rounded-lg text-sm transition ${posForm.crypto ? "bg-gradient-to-br from-amber-400 to-orange-600 text-white" : "text-slate-400"}`}>Crypto</button>
                   </div>
                   <label className="text-xs text-slate-400">ชื่อ<input value={posForm.symbol} onChange={(e) => setPosForm((f) => ({ ...f, symbol: e.target.value.toUpperCase() }))} placeholder={posForm.crypto ? "BTC" : "NVDA"} className="mt-1 w-full glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
-                  <label className="text-xs text-slate-400">ราคาที่ซื้อ ($)<input type="number" step="any" min="0" value={posForm.price} onChange={(e) => setPosForm((f) => ({ ...f, price: e.target.value }))} placeholder="0.00" className="mt-1 w-full glass rounded-xl px-3 py-2 font-mono text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
+                  <label className="text-xs text-slate-400">{posForm.side === "buy" ? "ราคาที่ซื้อ ($)" : "ราคาที่ขาย ($)"}<input type="number" step="any" min="0" value={posForm.price} onChange={(e) => setPosForm((f) => ({ ...f, price: e.target.value }))} placeholder="0.00" className="mt-1 w-full glass rounded-xl px-3 py-2 font-mono text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
                   <label className="text-xs text-slate-400">จำนวน<input type="number" step="any" min="0" value={posForm.qty} onChange={(e) => setPosForm((f) => ({ ...f, qty: e.target.value }))} placeholder="0" className="mt-1 w-full glass rounded-xl px-3 py-2 font-mono text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
-                  <label className="text-xs text-slate-400">วันที่ซื้อ<input type="date" value={posForm.boughtAt} onChange={(e) => setPosForm((f) => ({ ...f, boughtAt: e.target.value }))} className="mt-1 w-full glass rounded-xl px-3 py-2 text-sm text-white [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
-                  <button type="submit" className="col-span-2 lg:col-span-1 glass-accent rounded-xl px-5 py-2 text-sm font-medium hover:brightness-110 transition">บันทึก</button>
+                  <label className="text-xs text-slate-400">{posForm.side === "buy" ? "วันที่ซื้อ" : "วันที่ขาย"}<input type="date" value={posForm.boughtAt} onChange={(e) => setPosForm((f) => ({ ...f, boughtAt: e.target.value }))} className="mt-1 w-full glass rounded-xl px-3 py-2 text-sm text-white [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
+                  <button type="submit" className={`col-span-2 lg:col-span-1 rounded-xl px-5 py-2 text-sm font-medium hover:brightness-110 transition ${posForm.side === "buy" ? "glass-accent" : "bg-gradient-to-br from-rose-400 to-rose-600 shadow-lg shadow-rose-500/30"}`}>{posForm.side === "buy" ? "บันทึกซื้อ" : "บันทึกขาย"}</button>
                 </div>
                 {posForm.price && posForm.qty && Number(posForm.price) * Number(posForm.qty) > 0 && (
                   <p className="mt-3 text-xs text-slate-400">มูลค่ารายการนี้ <span className="font-mono text-violet-200">{money(Number(posForm.price) * Number(posForm.qty))}</span></p>
@@ -828,7 +921,7 @@ export default function Home() {
                 <div className="card p-10 text-center text-slate-400">
                   <div className="text-4xl mb-3">💼</div>
                   <p>ยังไม่มีรายการ บันทึกการซื้อด้านบนเพื่อเริ่มติดตามพอร์ต</p>
-                  <p className="mt-1 text-xs text-slate-500">ซื้อตัวเดิมหลายครั้งได้ ระบบจะคิดต้นทุนเฉลี่ยให้</p>
+                  <p className="mt-1 text-xs text-slate-500">ซื้อตัวเดิมหลายครั้งได้ ระบบจะคิดต้นทุนเฉลี่ยให้ ขายแล้วจะคิดกำไรที่ได้จริง</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -847,6 +940,11 @@ export default function Home() {
                             {pnl != null && <p className={`font-mono text-sm ${good ? "text-emerald-300" : "text-rose-300"}`}>{good ? "+" : ""}{money(pnl)} ({pnlPct! >= 0 ? "+" : ""}{pnlPct!.toFixed(2)}%)</p>}
                           </div>
                         </div>
+                        {holdingAdvice[h.symbol] && (() => {
+                          const a = holdingAdvice[h.symbol];
+                          const tone = a.action === "CutLoss" ? "border-rose-400/40 bg-rose-500/15 text-rose-200" : a.action === "TakeProfit" ? "border-amber-300/40 bg-amber-400/15 text-amber-200" : a.action === "AddMore" ? "border-sky-300/40 bg-sky-400/15 text-sky-200" : "border-emerald-300/40 bg-emerald-400/15 text-emerald-200";
+                          return <p className={`mt-2 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs ${tone}`}>🤖 {a.actionTH} <span className="opacity-60">· {formatTimeAgo(new Date(a.at))}</span></p>;
+                        })()}
                         <div className="relative mt-3">
                           <Sparkline values={q?.spark} className="h-14 w-full" />
                           {q?.spark && (() => {
@@ -861,12 +959,12 @@ export default function Home() {
                           <button onClick={() => openSymbol(h.symbol, h.crypto)} className="glass rounded-full px-3 py-1 text-violet-200 hover:bg-violet-500/20 transition">🔮 วิเคราะห์แนวโน้ม</button>
                         </div>
                         <details className="mt-3 text-xs">
-                          <summary className="cursor-pointer text-slate-500 hover:text-slate-300">รายการซื้อ {h.lots.length} ครั้ง</summary>
+                          <summary className="cursor-pointer text-slate-500 hover:text-slate-300">รายการซื้อขาย {h.lots.length} ครั้ง</summary>
                           <div className="mt-2 space-y-1">
                             {h.lots.map((l) => (
                               <div key={l.id} className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-1.5">
                                 <span className="text-slate-400">{new Date(l.bought_at + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })}</span>
-                                <span className="font-mono text-slate-300">{l.qty} × {money(l.price)}</span>
+                                <span className={`font-mono ${l.side === "sell" ? "text-rose-300" : "text-slate-300"}`}>{l.side === "sell" ? "ขาย" : "ซื้อ"} {l.qty} × {money(l.price)}</span>
                                 <button onClick={() => deletePosition(l.id)} title="ลบรายการนี้" className="text-slate-600 hover:text-rose-400 transition">✕</button>
                               </div>
                             ))}
@@ -877,9 +975,100 @@ export default function Home() {
                   })}
                 </div>
               )}
+
+              {/* Sales history vs AI */}
+              {portfolio.sales.length > 0 && (
+                <div className="card spotlight p-5">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="font-semibold text-white">🧾 ประวัติการขาย</h3>
+                    {(() => {
+                      const judged = portfolio.sales.filter((x) => x.ai_action || x.ai_suggestion);
+                      const agree = judged.filter((x) => x.ai_action === "CutLoss" || x.ai_action === "TakeProfit" || (!x.ai_action && x.ai_suggestion === "Avoid")).length;
+                      return judged.length ? <span className="text-xs text-slate-400">ขายตรงกับ AI {agree}/{judged.length} ครั้ง</span> : null;
+                    })()}
+                  </div>
+                  <div className="space-y-2">
+                    {portfolio.sales.map((x) => {
+                      const aiSaysSell = x.ai_action === "CutLoss" || x.ai_action === "TakeProfit" || (!x.ai_action && x.ai_suggestion === "Avoid");
+                      const aiLabel = x.ai_action_th ?? (x.ai_suggestion === "Buy" ? "ซื้อได้" : x.ai_suggestion === "Wait" ? "รอจังหวะ" : x.ai_suggestion === "Avoid" ? "หลีกเลี่ยง" : null);
+                      return (
+                        <div key={x.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/[0.03] px-4 py-3 text-sm">
+                          <div>
+                            <p className="font-semibold text-white">{x.symbol.replace(/-USD$/, "")} <span className="font-normal text-slate-500 text-xs">{new Date(x.bought_at + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })}</span></p>
+                            <p className="font-mono text-xs text-slate-400">ขาย {x.qty} × {money(x.price)} · ทุน {money(x.avgCostAtSale)}</p>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            {aiLabel && <span className={`rounded-full border px-2.5 py-0.5 text-xs ${aiSaysSell ? "border-emerald-300/30 bg-emerald-400/10 text-emerald-200" : "border-amber-300/30 bg-amber-400/10 text-amber-200"}`}>AI ตอนนั้น: {aiLabel} {aiSaysSell ? "✓ ตรง" : "↔ สวน"}</span>}
+                            <span className={`font-mono font-semibold ${x.realized >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{x.realized >= 0 ? "+" : ""}{money(x.realized)} ({x.realizedPct >= 0 ? "+" : ""}{x.realizedPct.toFixed(1)}%)</span>
+                            <button onClick={() => deletePosition(x.id)} title="ลบรายการนี้" className="text-slate-600 hover:text-rose-400 transition">✕</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           );
         })()}
+
+        {/* ===== ACCURACY TAB ===== */}
+        {activeTab === "accuracy" && (
+          <div className="space-y-6">
+            <div className="card spotlight glow-ring relative overflow-hidden rounded-2xl p-6">
+              <span className="glow-ring-edge" />
+              <div className="page-header-grid pointer-events-none absolute inset-y-0 right-0 w-1/2" />
+              <h2 className="text-lg font-bold text-white">🎯 AI แม่นแค่ไหน</h2>
+              <p className="mt-1 text-xs text-slate-400">ระบบย้อนกลับไปเช็กทุกคำแนะนำที่เก่ากว่า 1 วัน ว่าราคาหลัง 7 และ 14 วันไปทางไหน และชน TP1 หรือ Stop Loss ก่อน (นับวันละครั้งต่อตัว)</p>
+              {accuracyLoading && <div className="mt-6 flex items-center gap-3 text-sm text-slate-400"><div className="assistant-orb relative h-8 w-8 rounded-full"><span className="assistant-orb-ring" /></div>กำลังย้อนเช็กราคา...</div>}
+              {accuracy && (
+                <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  {([
+                    ["ความแม่นรวม", accuracy.overall.winRate != null ? `${accuracy.overall.winRate}%` : "–", `${accuracy.overall.evaluated} คำแนะนำที่วัดผลได้`],
+                    ["แนะนำ 'ซื้อได้' แล้วขึ้น", accuracy.buy.winRate != null ? `${accuracy.buy.winRate}%` : "–", `ชน TP1 ${accuracy.buy.tpHits} · ชน SL ${accuracy.buy.slHits}`],
+                    ["ผลตอบแทนเฉลี่ย 'ซื้อได้'", accuracy.buy.avgRet14 != null ? `${accuracy.buy.avgRet14 >= 0 ? "+" : ""}${accuracy.buy.avgRet14}%` : "–", `14 วัน · 7 วัน ${accuracy.buy.avgRet7 ?? "–"}%`],
+                    ["คะแนน ≥7 vs <7", `${accuracy.buyHighScore.winRate ?? "–"}% / ${accuracy.buyLowScore.winRate ?? "–"}%`, "อัตราถูกเมื่อ AI มั่นใจสูง vs ต่ำ"],
+                  ] as const).map(([label, value, sub]) => (
+                    <div key={label} className="glass rounded-xl p-4">
+                      <p className="text-xs text-slate-400">{label}</p>
+                      <p className="mt-1 font-mono text-2xl font-bold text-white">{value}</p>
+                      <p className="mt-1 text-[11px] text-slate-500">{sub}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {accuracy && accuracy.overall.evaluated < 10 && (
+                <p className="mt-4 text-xs text-amber-200/80">ข้อมูลยังน้อย ({accuracy.overall.evaluated} รายการ) ตัวเลขยังเชื่อถือไม่ได้ จะแม่นขึ้นเมื่อสะสมเกิน 20–30 รายการ ซึ่ง cron 07:00 น. จะช่วยเพิ่มให้ทุกวัน</p>
+              )}
+            </div>
+
+            {accuracy && accuracy.recent.length > 0 && (
+              <div className="card spotlight p-5">
+                <h3 className="mb-4 font-semibold text-white">คำแนะนำย้อนหลัง</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[560px] text-sm">
+                    <thead><tr className="text-left text-xs text-slate-500">
+                      <th className="pb-2 font-normal">วันที่</th><th className="pb-2 font-normal">ตัว</th><th className="pb-2 font-normal">AI บอก</th>
+                      <th className="pb-2 text-right font-normal">ราคาตอนนั้น</th><th className="pb-2 text-right font-normal">7 วัน</th><th className="pb-2 text-right font-normal">14 วัน</th><th className="pb-2 text-center font-normal">ผล</th>
+                    </tr></thead>
+                    <tbody>
+                      {accuracy.recent.map((r, i) => (
+                        <tr key={i} className="border-t border-white/5">
+                          <td className="py-2 text-slate-400">{new Date(r.date + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short" })}</td>
+                          <td className="py-2"><button onClick={() => openSymbol(r.symbol, r.symbol.endsWith("-USD"))} className="font-semibold text-white hover:text-violet-300">{r.symbol.replace(/-USD$/, "")}</button></td>
+                          <td className="py-2"><span className={`rounded-full px-2 py-0.5 text-xs ${suggestionBadge[r.suggestion as "Buy" | "Wait" | "Avoid"] ?? ""}`}>{r.suggestion === "Buy" ? "ซื้อได้" : r.suggestion === "Wait" ? "รอจังหวะ" : "หลีกเลี่ยง"}{r.score != null && ` ${r.score}`}</span></td>
+                          <td className="py-2 text-right font-mono text-slate-300">{money(r.entry)}</td>
+                          {[r.ret7, r.ret14].map((v, j) => <td key={j} className={`py-2 text-right font-mono ${v == null ? "text-slate-600" : v >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{v == null ? "รอ" : `${v >= 0 ? "+" : ""}${v}%`}</td>)}
+                          <td className="py-2 text-center">{r.hit === "tp" ? "🎯 TP" : r.hit === "sl" ? "🛑 SL" : r.correct === true ? "✅" : r.correct === false ? "❌" : <span className="text-slate-600">–</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ===== DETAIL TAB ===== */}
         {activeTab === "detail" && (

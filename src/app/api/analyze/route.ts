@@ -159,6 +159,7 @@ ${volumeSection}${trendStrengthSection}${weeklySection}${confluenceSection}${mar
     analysis.riskReward = num(analysis.riskReward);
     analysis.score = num(analysis.score);
     if (analysis.targets) { analysis.targets.tp1 = num(analysis.targets.tp1); analysis.targets.tp2 = num(analysis.targets.tp2); }
+    analysis.priceAtAnalysis = data.price;
     if (analysis.positionAdvice) {
       analysis.positionAdvice.stopForPosition = num(analysis.positionAdvice.stopForPosition);
       analysis.positionAdvice.targetForPosition = num(analysis.positionAdvice.targetForPosition);

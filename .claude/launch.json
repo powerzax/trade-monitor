@@ -4,8 +4,12 @@
     {
       "name": "Next.js Dev",
       "runtimeExecutable": "/Users/worapol/.nvm/versions/node/v20.20.2/bin/node",
-      "runtimeArgs": ["/Users/worapol/Code/trade-monitor/node_modules/.bin/next", "dev"],
-      "port": 3000
+      "runtimeArgs": [
+        "/Users/worapol/Code/trade-monitor/node_modules/.bin/next",
+        "dev"
+      ],
+      "port": 3000,
+      "autoPort": true
     }
   ]
 }

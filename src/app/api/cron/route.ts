@@ -1,7 +1,15 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { sql, initDB } from "@/lib/db";
+import { runScan } from "@/lib/screener";
+import { computeHoldings, type Position } from "@/lib/portfolio";
 
-export async function GET() {
+export const maxDuration = 300;
+
+export async function GET(req: NextRequest) {
+  const secret = process.env.CRON_SECRET;
+  if (secret && req.headers.get("authorization") !== `Bearer ${secret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   try {
     await initDB();
 
@@ -19,6 +27,32 @@ export async function GET() {
 
     if (!res.ok) throw new Error("Market overview failed");
     const analysis = await res.json();
+
+    const scan = await runScan();
+    await sql`INSERT INTO analysis_cache (symbol, type, result) VALUES ('SCREENER', 'screener', ${JSON.stringify(scan)}::jsonb)`;
+
+    // Re-analyse every open holding so the morning view already has hold/sell advice.
+    const posRows = await sql`SELECT id, symbol, crypto, name, price::float AS price, qty::float AS qty, side, to_char(bought_at, 'YYYY-MM-DD') AS bought_at FROM positions`;
+    const { open } = computeHoldings(posRows as unknown as Position[]);
+    const holdingResults: { symbol: string; ok: boolean; action?: string }[] = [];
+    for (const h of open) {
+      try {
+        const sym = h.symbol.replace(/-USD$/, "");
+        const [stock, news] = await Promise.all([
+          fetch(`${baseUrl}/api/stock?symbol=${sym}&crypto=${h.crypto}`).then((r) => r.json()),
+          fetch(`${baseUrl}/api/news?symbol=${h.symbol}`).then((r) => r.json()).catch(() => ({ items: [] })),
+        ]);
+        if (stock.error) throw new Error(stock.error);
+        const a = await fetch(`${baseUrl}/api/analyze`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...stock, news: news.items ?? [], position: h }),
+        }).then((r) => r.json());
+        holdingResults.push({ symbol: h.symbol, ok: !a.error, action: a.positionAdvice?.actionTH });
+      } catch {
+        holdingResults.push({ symbol: h.symbol, ok: false });
+      }
+    }
 
     // ส่ง Telegram (ถ้ามี token)
     if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
@@ -39,6 +73,10 @@ export async function GET() {
         ).join("\n")
         : "";
 
+      const topScan = scan.rows.slice(0, 5).map((r) => `• ${r.ticker.replace(/-USD$/, "")} ${r.score > 0 ? "+" : ""}${r.score}/7`).join("\n");
+      const holdSection = holdingResults.length
+        ? `\n\n💼 *พอร์ต*\n` + holdingResults.map((h) => `• ${h.symbol.replace(/-USD$/, "")} — ${h.action ?? (h.ok ? "วิเคราะห์แล้ว" : "ผิดพลาด")}`).join("\n")
+        : "";
       const message = `📈 *Trade Monitor — รายงานตลาด*
 ${new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" })}
 
@@ -52,7 +90,10 @@ ${analysis.marketOverview}${fg}
 ${topStocks}
 
 🪙 *Crypto น่าสนใจ*
-${topCrypto}${favSection}`;
+${topCrypto}${favSection}${holdSection}
+
+🔎 *สแกนเจอสัญญาณดี*
+${topScan}`;
 
       await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
         method: "POST",
@@ -65,7 +106,7 @@ ${topCrypto}${favSection}`;
       });
     }
 
-    return NextResponse.json({ ok: true, time: new Date().toISOString() });
+    return NextResponse.json({ ok: true, time: new Date().toISOString(), scanned: scan.rows.length, holdings: holdingResults });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Cron failed";
     return NextResponse.json({ error: msg }, { status: 500 });

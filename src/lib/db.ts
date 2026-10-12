@@ -34,6 +34,7 @@ export async function initDB() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `;
+  await sql`ALTER TABLE positions ADD COLUMN IF NOT EXISTS side TEXT NOT NULL DEFAULT 'buy'`;
   await sql`
     CREATE INDEX IF NOT EXISTS idx_analysis_cache_symbol
     ON analysis_cache(symbol, created_at DESC)
