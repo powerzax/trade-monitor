@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchChart, fetchQuoteSummary, fetchMarketRegime, dayKey } from "@/lib/yahoo";
+import { fetchChart, fetchQuoteSummary, fetchMarketRegime, dayKey, parseCloses } from "@/lib/yahoo";
 import { computeIndicators, computeProjection } from "@/lib/indicators";
+import { getCalibration } from "@/lib/calibrate";
 
 async function fetchYahoo(ticker: string, interval = "1d", days = 180) {
   return fetchChart(ticker, interval, days);
 }
 
 async function fetchFundamentals(ticker: string) {
-  return fetchQuoteSummary(ticker, "recommendationTrend,financialData,defaultKeyStatistics,earningsTrend,calendarEvents");
+  return fetchQuoteSummary(ticker, "recommendationTrend,financialData,defaultKeyStatistics,earningsTrend,calendarEvents,assetProfile");
 }
 
 async function fetchFearGreed() {
@@ -24,6 +25,49 @@ async function fetchFearGreed() {
   } catch { return null; }
 }
 
+const SECTOR_ETF: Record<string, [string, string]> = {
+  "Technology": ["XLK", "เทคโนโลยี"],
+  "Communication Services": ["XLC", "สื่อสาร/อินเทอร์เน็ต"],
+  "Consumer Cyclical": ["XLY", "สินค้าฟุ่มเฟือย"],
+  "Consumer Defensive": ["XLP", "สินค้าจำเป็น"],
+  "Energy": ["XLE", "พลังงาน"],
+  "Financial Services": ["XLF", "การเงิน"],
+  "Healthcare": ["XLV", "สุขภาพ"],
+  "Industrials": ["XLI", "อุตสาหกรรม"],
+  "Basic Materials": ["XLB", "วัตถุดิบ"],
+  "Real Estate": ["XLRE", "อสังหาฯ"],
+  "Utilities": ["XLU", "สาธารณูปโภค"],
+};
+
+const pctChange = (c: number[], n: number) => c.length > n ? Math.round(((c[c.length - 1] - c[c.length - 1 - n]) / c[c.length - 1 - n]) * 1000) / 10 : null;
+
+async function sectorStrength(ticker: string, isCrypto: boolean, profile: { sector?: string; industry?: string } | undefined, closes: number[]) {
+  let etf: string | null = null, label = "";
+  if (isCrypto) {
+    if (ticker === "BTC-USD") return null;
+    etf = "BTC-USD"; label = "Bitcoin";
+  } else if (profile?.industry?.startsWith("Semiconductor")) {
+    etf = "SMH"; label = "กลุ่มชิป";
+  } else if (profile?.sector && SECTOR_ETF[profile.sector]) {
+    [etf, label] = SECTOR_ETF[profile.sector];
+    label = `กลุ่ม${label}`;
+  }
+  if (!etf) return null;
+  try {
+    const ec = parseCloses(await fetchChart(etf, "1d", 180)).map((p) => p.close);
+    const s20 = pctChange(closes, 20), e20 = pctChange(ec, 20), s60 = pctChange(closes, 60), e60 = pctChange(ec, 60);
+    return {
+      sector: profile?.sector ?? (isCrypto ? "Crypto" : null),
+      industry: profile?.industry ?? null,
+      etf, label,
+      stockPerf20d: s20, sectorPerf20d: e20, rs20: s20 != null && e20 != null ? Math.round((s20 - e20) * 10) / 10 : null,
+      stockPerf60d: s60, sectorPerf60d: e60, rs60: s60 != null && e60 != null ? Math.round((s60 - e60) * 10) / 10 : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(req: NextRequest) {
   const symbol = req.nextUrl.searchParams.get("symbol");
   const isCrypto = req.nextUrl.searchParams.get("crypto") === "true";
@@ -33,12 +77,13 @@ export async function GET(req: NextRequest) {
   try {
     const ticker = isCrypto ? `${symbol.toUpperCase()}-USD` : symbol.toUpperCase();
 
-    const [chartData, weeklyData, fundamentals, fearGreed, regime] = await Promise.all([
+    const [chartData, weeklyData, fundamentals, fearGreed, regime, calibration] = await Promise.all([
       fetchYahoo(ticker, "1d", 180),
       fetchYahoo(ticker, "1wk", 365).catch(() => null),
       isCrypto ? null : fetchFundamentals(ticker),
       fetchFearGreed(),
       fetchMarketRegime(),
+      getCalibration(),
     ]);
 
     const result = chartData?.chart?.result?.[0];
@@ -77,7 +122,7 @@ export async function GET(req: NextRequest) {
     const weeklyCloses = weeklyCandles.map((c) => c.close as number);
     const weeklyVolumes = weeklyCandles.map((c) => c.volume as number);
 
-    const indicators = computeIndicators(closes, highs, lows, volumes, weeklyCloses, weeklyVolumes);
+    const indicators = computeIndicators(closes, highs, lows, volumes, weeklyCloses, weeklyVolumes, calibration?.weights);
 
     const high52w = meta.fiftyTwoWeekHigh ?? Math.max(...closes);
     const low52w = meta.fiftyTwoWeekLow ?? Math.min(...closes);
@@ -138,6 +183,8 @@ export async function GET(req: NextRequest) {
       ? { date: new Date(earnTs * 1000).toISOString().slice(0, 10), daysUntil: Math.ceil((earnTs * 1000 - Date.now()) / 86400000) }
       : null;
 
+    const sector = await sectorStrength(ticker, isCrypto, fundamentals?.assetProfile, closes);
+
     const projection = computeProjection(
       candles.map((c) => ({ time: c.time, close: c.close as number })),
       indicators?.confluence?.score ?? 0,
@@ -150,6 +197,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       beta,
       earnings,
+      sector,
       projection,
       market: { spy: regime.spy, qqq: regime.qqq, vix: regime.vix, regime: regime.regime },
       symbol: ticker,

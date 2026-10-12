@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 const CandleChart = dynamic(() => import("@/components/CandleChart"), { ssr: false });
 import type { ProjectionPoint, PriceLine } from "@/components/CandleChart";
 import { computeHoldings, type Position } from "@/lib/portfolio";
+import { Term } from "@/components/Term";
 
 const POPULAR = [
   { symbol: "AAPL", label: "AAPL", crypto: false },
@@ -64,6 +65,7 @@ interface StockData {
   analystData: AnalystData | null;
   beta?: number | null;
   earnings?: { date: string; daysUntil: number } | null;
+  sector?: { label: string; etf: string; rs20: number | null; rs60: number | null; stockPerf20d: number | null; sectorPerf20d: number | null } | null;
   projection?: { horizon: number; sigmaDaily: number; muDaily: number; earningsInHorizon: boolean; points: ProjectionPoint[] } | null;
   market?: {
     spy: { changePct: number; perf20d: number; aboveMa50: boolean } | null;
@@ -88,6 +90,8 @@ interface AnalysisNewsItem {
 }
 
 interface Analysis {
+  oneLiner?: string;
+  confidenceNote?: string;
   positionAdvice?: {
     action: "Hold" | "TakeProfit" | "CutLoss" | "AddMore";
     actionTH: string;
@@ -417,6 +421,48 @@ export default function Home() {
   const [error, setError] = useState("");
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const [chat, setChat] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+
+  useEffect(() => {
+    try { setShowDetails(localStorage.getItem("tm.details") === "1"); } catch {}
+  }, []);
+
+  function toggleDetails() {
+    setShowDetails((v) => {
+      try { localStorage.setItem("tm.details", v ? "0" : "1"); } catch {}
+      return !v;
+    });
+  }
+
+  async function askAI(question: string) {
+    const q = question.trim();
+    if (!q || !data || chatLoading) return;
+    const next = [...chat, { role: "user" as const, content: q }];
+    setChat(next);
+    setChatInput("");
+    setChatLoading(true);
+    const h = holdings.find((x) => x.symbol === data.symbol);
+    const ind = data.indicators;
+    const context = {
+      symbol: data.symbol, name: data.name, price: data.price, changeTodayPct: Number(data.changePct?.toFixed(2)),
+      indicators: ind && { rsi: ind.rsi, macdHist: ind.macd.histogram, ma20: ind.ma20, ma50: ind.ma50, support: ind.support, resistance: ind.resistance, volumeRatio: ind.volumeRatio, adx: ind.adx, weekly: ind.weekly, confluence: ind.confluence && { score: ind.confluence.score, signals: ind.confluence.details } },
+      market: data.market, beta: data.beta, earnings: data.earnings, sector: data.sector,
+      projection10d: data.projection?.points.at(-1),
+      analysis: analysis && { suggestion: analysis.suggestion, score: analysis.score, tldr: analysis.tldr, entry: analysis.entryStrategy, targets: analysis.targets, stopLoss: analysis.stopLoss, riskReward: analysis.riskReward, risks: analysis.risks, signals: analysis.signals, positionAdvice: analysis.positionAdvice },
+      myPosition: h ? { avgCost: h.avgCost, qty: h.qty, pnlPct: ((data.price - h.avgCost) / h.avgCost) * 100 } : null,
+    };
+    try {
+      const j = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ context, messages: next }) }).then((r) => r.json());
+      setChat([...next, { role: "assistant", content: j.reply ?? `ผิดพลาด: ${j.error}` }]);
+    } catch {
+      setChat([...next, { role: "assistant", content: "เชื่อมต่อไม่ได้ ลองใหม่อีกครั้ง" }]);
+    } finally {
+      setChatLoading(false);
+    }
+  }
 
   const isFavorited = data ? favorites.some((f) => f.symbol === data.symbol) : false;
 
@@ -449,6 +495,7 @@ export default function Home() {
     setNews([]);
     setHistory([]);
     setShowHistory(false);
+    setChat([]);
     try {
       const ticker = crypto ? `${sym.toUpperCase()}-USD` : sym.toUpperCase();
       const [stockRes, newsRes] = await Promise.all([
@@ -1119,6 +1166,57 @@ export default function Home() {
 
         {data && (
           <>
+            {/* 5-second summary */}
+            {(() => {
+              const sug = analysis?.suggestion ?? (data.indicators?.confluence ? (data.indicators.confluence.score >= 2 ? "Buy" : data.indicators.confluence.score <= -2 ? "Avoid" : "Wait") : null);
+              const light = sug === "Buy" ? { c: "#34d399", glow: "rgba(52,211,153,0.55)", label: analysis?.suggestionTH ?? "เอียงซื้อ" } : sug === "Avoid" ? { c: "#fb7185", glow: "rgba(251,113,133,0.55)", label: analysis?.suggestionTH ?? "เอียงขาย" } : { c: "#fbbf24", glow: "rgba(251,191,36,0.5)", label: analysis?.suggestionTH ?? "รอจังหวะ" };
+              const h = holdings.find((x) => x.symbol === data.symbol);
+              const line = analysis?.oneLiner || analysis?.tldr;
+              return (
+                <div className="card spotlight glow-ring relative overflow-hidden rounded-2xl p-5 sm:p-6">
+                  <span className="glow-ring-edge" />
+                  <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
+                    <div className="flex items-center gap-4 sm:flex-col sm:gap-2">
+                      <div className="relative grid h-20 w-20 shrink-0 place-items-center rounded-full" style={{ background: `radial-gradient(circle at 35% 30%, #fff8, ${light.c} 45%, #0008 100%)`, boxShadow: `0 0 40px ${light.glow}, inset 0 0 0 1px #fff4` }}>
+                        {analyzing && <span className="absolute inset-0 animate-ping rounded-full" style={{ background: light.glow }} />}
+                        <span className="text-2xl">{sug === "Buy" ? "▲" : sug === "Avoid" ? "▼" : "◆"}</span>
+                      </div>
+                      <p className="text-lg font-bold sm:text-center" style={{ color: light.c }}>{light.label}</p>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs uppercase tracking-widest text-slate-400">สรุป 5 วินาที · {data.symbol.replace(/-USD$/, "")}</p>
+                      <p className="mt-1 text-xl font-semibold leading-snug text-white sm:text-2xl">
+                        {analyzing && !line ? "กำลังให้ AI สรุป..." : line ?? "ยังไม่มีผลวิเคราะห์ กดวิเคราะห์เพื่อรับคำแนะนำ"}
+                      </p>
+                      {analysis?.confidenceNote && <p className="mt-2 text-sm text-slate-400">💭 {analysis.confidenceNote}</p>}
+                      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        {[
+                          ["จุดเข้า", analysis?.entryStrategy?.first, "text-emerald-200"],
+                          ["เป้า TP1", analysis?.targets?.tp1, "text-sky-200"],
+                          ["Stop Loss", h && analysis?.positionAdvice?.stopForPosition != null ? analysis.positionAdvice.stopForPosition : analysis?.stopLoss, "text-rose-200"],
+                          [h ? "กำไร/ขาดทุนของคุณ" : "คะแนน AI", h ? null : analysis?.score, "text-violet-200"],
+                        ].map(([label, v, tone], i) => (
+                          <div key={i} className="glass rounded-xl px-3 py-2">
+                            <p className="text-[11px] text-slate-400">{label as string}</p>
+                            {i === 3 && h ? (
+                              <p className={`font-mono text-base font-semibold ${data.price >= h.avgCost ? "text-emerald-300" : "text-rose-300"}`}>{data.price >= h.avgCost ? "+" : ""}{(((data.price - h.avgCost) / h.avgCost) * 100).toFixed(1)}%</p>
+                            ) : (
+                              <p className={`font-mono text-base font-semibold ${tone as string}`}>{v == null ? "–" : i === 3 ? `${v}/10` : `$${fmt(v)}`}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    <button onClick={toggleDetails} className="glass rounded-full px-4 py-1.5 text-sm text-slate-200 hover:bg-violet-500/20 transition">{showDetails ? "▲ ซ่อนรายละเอียด" : "▼ ดูรายละเอียดทั้งหมด"}</button>
+                    {!analyzing && <button onClick={() => analyze(data, news)} className="glass rounded-full px-4 py-1.5 text-sm text-violet-200 hover:bg-violet-500/20 transition">🔄 วิเคราะห์ใหม่</button>}
+                    <a href="#ask-ai" className="glass rounded-full px-4 py-1.5 text-sm text-sky-200 hover:bg-sky-500/20 transition">💬 ถาม AI</a>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Quote Header */}
             <div className="card spotlight glow-ring p-5 rounded-2xl">
               <span className="glow-ring-edge" />
@@ -1163,7 +1261,7 @@ export default function Home() {
                   <div className="mt-5 pt-5 border-t border-white/5 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] items-center">
                     <div>
                       <div className="flex items-baseline justify-between mb-2">
-                        <span className="text-xs uppercase tracking-widest text-slate-400">Confluence Score</span>
+                        <span className="text-xs uppercase tracking-widest text-slate-400"><Term id="confluence">Confluence Score</Term></span>
                         <span className={`font-mono text-2xl font-bold ${tone}`}>{c.score > 0 ? "+" : ""}{c.score}<span className="text-sm text-slate-500">/7</span> <span className="text-sm font-sans">{label[c.signal]}</span></span>
                       </div>
                       <div className="relative h-2.5 rounded-full bg-gradient-to-r from-rose-500/70 via-violet-500/40 to-emerald-400/80">
@@ -1171,13 +1269,13 @@ export default function Home() {
                       </div>
                       <div className="mt-3 flex flex-wrap gap-1.5">
                         {c.details.map((d, i) => (
-                          <span key={i} className={`text-[11px] px-2 py-0.5 rounded-full border ${d.includes("+1") ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-rose-400/30 bg-rose-400/10 text-rose-200"}`}>{d}</span>
+                          <span key={i} className={`text-[11px] px-2 py-0.5 rounded-full border ${d.includes(" +") ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-rose-400/30 bg-rose-400/10 text-rose-200"}`}>{d}</span>
                         ))}
                       </div>
                     </div>
                     <div className="flex sm:flex-col gap-2 text-xs">
-                      {data.indicators.weekly && <span className="glass rounded-lg px-3 py-1.5">Weekly <b className={data.indicators.weekly.trend === "bullish" ? "text-emerald-300" : "text-rose-300"}>{data.indicators.weekly.trend === "bullish" ? "▲ ขาขึ้น" : "▼ ขาลง"}</b></span>}
-                      {data.indicators.adx != null && <span className="glass rounded-lg px-3 py-1.5">ADX <b className="text-violet-200">{data.indicators.adx}</b> <span className="text-slate-400">({data.indicators.trendStrength})</span></span>}
+                      {data.indicators.weekly && <span className="glass rounded-lg px-3 py-1.5"><Term id="weekly">Weekly</Term> <b className={data.indicators.weekly.trend === "bullish" ? "text-emerald-300" : "text-rose-300"}>{data.indicators.weekly.trend === "bullish" ? "▲ ขาขึ้น" : "▼ ขาลง"}</b></span>}
+                      {data.indicators.adx != null && <span className="glass rounded-lg px-3 py-1.5"><Term id="adx" value={data.indicators.adx}>ADX</Term> <b className="text-violet-200">{data.indicators.adx}</b> <span className="text-slate-400">({data.indicators.trendStrength})</span></span>}
                     </div>
                   </div>
                 );
@@ -1194,8 +1292,13 @@ export default function Home() {
                 )}
                 {data.market?.spy && <span className="glass rounded-full px-3 py-1.5">S&P 500 <b className={data.market.spy.changePct >= 0 ? "text-emerald-300" : "text-rose-300"}>{data.market.spy.changePct >= 0 ? "+" : ""}{data.market.spy.changePct}%</b> <span className="text-slate-500">· 20d {data.market.spy.perf20d}%</span></span>}
                 {data.market?.qqq && <span className="glass rounded-full px-3 py-1.5">Nasdaq <b className={data.market.qqq.changePct >= 0 ? "text-emerald-300" : "text-rose-300"}>{data.market.qqq.changePct >= 0 ? "+" : ""}{data.market.qqq.changePct}%</b></span>}
-                {data.market?.vix != null && <span className={`glass rounded-full px-3 py-1.5 ${data.market.vix > 25 ? "text-rose-200" : ""}`}>VIX <b>{data.market.vix}</b></span>}
-                {data.beta != null && <span className="glass rounded-full px-3 py-1.5">Beta <b className="text-violet-200">{data.beta}</b> <span className="text-slate-500">{data.beta > 1.3 ? "แกว่งแรงกว่าตลาด" : data.beta < 0.7 ? "แกว่งน้อยกว่าตลาด" : "ใกล้ตลาด"}</span></span>}
+                {data.market?.vix != null && <span className={`glass rounded-full px-3 py-1.5 ${data.market.vix > 25 ? "text-rose-200" : ""}`}><Term id="vix" value={data.market.vix}>VIX</Term> <b>{data.market.vix}</b></span>}
+                {data.sector?.rs20 != null && (
+                  <span className={`rounded-full border px-3 py-1.5 ${data.sector.rs20 >= 0 ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-rose-400/30 bg-rose-400/10 text-rose-200"}`}>
+                    <Term id="sector" value={data.sector.rs20}>{data.sector.rs20 >= 0 ? "💪 แข็งกว่า" : "🐢 อ่อนกว่า"}{data.sector.label}</Term> <b className="font-mono">{data.sector.rs20 >= 0 ? "+" : ""}{data.sector.rs20}%</b> <span className="opacity-60">20 วัน{data.sector.rs60 != null && ` · 60 วัน ${data.sector.rs60 >= 0 ? "+" : ""}${data.sector.rs60}%`}</span>
+                  </span>
+                )}
+                {data.beta != null && <span className="glass rounded-full px-3 py-1.5"><Term id="beta" value={data.beta}>Beta</Term> <b className="text-violet-200">{data.beta}</b> <span className="text-slate-500">{data.beta > 1.3 ? "แกว่งแรงกว่าตลาด" : data.beta < 0.7 ? "แกว่งน้อยกว่าตลาด" : "ใกล้ตลาด"}</span></span>}
                 {data.earnings && (
                   <span className={`rounded-full border px-3 py-1.5 ${data.earnings.daysUntil <= 14 ? "border-amber-400/40 bg-amber-400/15 text-amber-200 animate-pulse" : "border-white/10 bg-white/5 text-slate-300"}`}>
                     📅 ประกาศงบ {new Date(data.earnings.date + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short" })} (อีก {data.earnings.daysUntil} วัน)
@@ -1261,7 +1364,7 @@ export default function Home() {
             {/* Chart */}
             <div className="card spotlight p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-sm font-medium text-slate-400">กราฟราคา 180 วัน{data.projection && <span className="text-violet-300"> + กรวยแนวโน้ม {data.projection.horizon} วันทำการ</span>}</h3>
+                <h3 className="text-sm font-medium text-slate-400">กราฟราคา 180 วัน{data.projection && <span className="text-violet-300"> + <Term id="projection">กรวยแนวโน้ม {data.projection.horizon} วันทำการ</Term></span>}</h3>
                 <div className="flex flex-wrap gap-3 text-[11px] text-slate-400">
                   {data.projection && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t-2 border-dashed border-violet-200" />กรณีกลาง</span>}
                   {data.projection && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t border-violet-400/70" />ช่วง 50%</span>}
@@ -1289,6 +1392,45 @@ export default function Home() {
               {data.projection && <p className="mt-2 text-[11px] text-slate-500">กรวยคำนวณจากความผันผวนจริง {data.projection.sigmaDaily}%/วัน เอียงตาม Confluence Score และสภาวะตลาด เป็นช่วงความน่าจะเป็นทางสถิติ ไม่ใช่การทำนายราคาแน่นอน</p>}
             </div>
 
+            {/* Ask AI */}
+            <div id="ask-ai" className="card spotlight scroll-mt-28 p-5">
+              <div className="mb-3 flex items-center gap-3">
+                <div className="assistant-orb relative grid h-9 w-9 place-items-center rounded-full text-sm"><span className="assistant-orb-ring" />💬</div>
+                <div>
+                  <h3 className="font-semibold text-white">ถาม AI เกี่ยวกับ {data.symbol.replace(/-USD$/, "")}</h3>
+                  <p className="text-xs text-slate-500">AI เห็นข้อมูลทั้งหมดในหน้านี้ รวมถึงพอร์ตของคุณ</p>
+                </div>
+              </div>
+              {chat.length > 0 && (
+                <div className="mb-3 max-h-96 space-y-2 overflow-y-auto pr-1">
+                  {chat.map((m, i) => (
+                    <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                      <div className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm leading-relaxed ${m.role === "user" ? "glass-accent text-white" : "glass text-slate-200"}`}>{m.content.replace(/\*+/g, "")}</div>
+                    </div>
+                  ))}
+                  {chatLoading && <div className="glass relative w-24 overflow-hidden rounded-2xl px-4 py-2 text-sm text-slate-400">กำลังคิด<div className="assistant-scan" /></div>}
+                </div>
+              )}
+              {chat.length === 0 && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {[
+                    "ควรซื้อตอนนี้เลยไหม หรือรอ",
+                    `ถ้าราคาลงไปถึงแนวรับ $${fmt(data.indicators?.support?.[0])} ควรทำยังไง`,
+                    "ทำไมให้คะแนนเท่านี้",
+                    holdings.some((x) => x.symbol === data.symbol) ? "ด้วยต้นทุนของผม ควรขายตอนไหน" : "ความเสี่ยงหลักคืออะไร",
+                  ].map((q) => (
+                    <button key={q} onClick={() => askAI(q)} className="glass rounded-full px-3 py-1.5 text-xs text-slate-300 hover:bg-violet-500/20 transition">{q}</button>
+                  ))}
+                </div>
+              )}
+              <form onSubmit={(e) => { e.preventDefault(); askAI(chatInput); }} className="flex gap-2">
+                <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="พิมพ์คำถาม เช่น ถ้าราคาลงไป 200 ควรทำยังไง" className="flex-1 glass rounded-xl px-4 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500/60" />
+                <button type="submit" disabled={chatLoading || !chatInput.trim()} className="glass-accent rounded-xl px-5 py-2 text-sm font-medium disabled:opacity-40 hover:brightness-110 transition">ส่ง</button>
+              </form>
+            </div>
+
+            {showDetails ? (
+              <>
             {/* Indicators + Analysis */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {/* Technical Indicators */}
@@ -1297,7 +1439,7 @@ export default function Home() {
                   <h3 className="font-semibold text-white">Technical Indicators</h3>
                   <div>
                     <div className="flex justify-between text-sm mb-1">
-                      <span className="text-slate-400">RSI (14)</span>
+                      <span className="text-slate-400"><Term id="rsi" value={data.indicators.rsi}>RSI (14)</Term></span>
                       <span className={data.indicators.rsi > 70 ? "text-red-400" : data.indicators.rsi < 30 ? "text-green-400" : "text-white"}>
                         {data.indicators.rsi?.toFixed(1)}
                         <span className="text-slate-500 ml-1 text-xs">{data.indicators.rsi > 70 ? "Overbought" : data.indicators.rsi < 30 ? "Oversold" : "Normal"}</span>
@@ -1309,13 +1451,13 @@ export default function Home() {
                     <div className="flex justify-between text-xs text-slate-600 mt-0.5"><span>0</span><span>30</span><span>70</span><span>100</span></div>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-slate-400 text-sm">MACD</span>
+                    <span className="text-slate-400 text-sm"><Term id="macd" value={data.indicators.macd.histogram}>MACD</Term></span>
                     <span className={data.indicators.macd.histogram > 0 ? "text-green-400 text-sm" : "text-red-400 text-sm"}>
                       {data.indicators.macd.histogram > 0 ? "▲" : "▼"} Hist: {data.indicators.macd.histogram?.toFixed(4)}
                     </span>
                   </div>
                   <div>
-                    <p className="text-slate-400 text-sm mb-1">Bollinger Bands</p>
+                    <p className="text-slate-400 text-sm mb-1"><Term id="bb">Bollinger Bands</Term></p>
                     <div className="text-xs space-y-0.5">
                       <div className="flex justify-between"><span className="text-slate-500">Upper</span><span className="text-purple-300">${data.indicators.bb.upper?.toFixed(2)}</span></div>
                       <div className="flex justify-between"><span className="text-slate-500">Middle (MA20)</span><span className="text-purple-400">${data.indicators.bb.middle?.toFixed(2)}</span></div>
@@ -1323,12 +1465,12 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="flex gap-4 text-sm">
-                    <div><span className="text-slate-400">MA20 </span><span className="text-yellow-400">${data.indicators.ma20?.toFixed(2)}</span></div>
+                    <div><span className="text-slate-400"><Term id="ma">MA20</Term> </span><span className="text-yellow-400">${data.indicators.ma20?.toFixed(2)}</span></div>
                     {data.indicators.ma50 && <div><span className="text-slate-400">MA50 </span><span className="text-orange-400">${data.indicators.ma50?.toFixed(2)}</span></div>}
                   </div>
                   {data.indicators.volumeRatio != null && (
                     <div className="flex justify-between items-center text-sm">
-                      <span className="text-slate-400">Volume Ratio (20d avg)</span>
+                      <span className="text-slate-400"><Term id="volume" value={data.indicators.volumeRatio}>Volume Ratio (20d avg)</Term></span>
                       <span className={data.indicators.volumeRatio > 1.5 ? "text-yellow-400 font-medium" : data.indicators.volumeRatio < 0.7 ? "text-slate-400" : "text-white"}>
                         {data.indicators.volumeRatio}x
                         {data.indicators.volumeRatio > 1.5 && <span className="ml-1 text-xs text-yellow-500">⚠ สูงผิดปกติ</span>}
@@ -1633,6 +1775,11 @@ export default function Home() {
                   })}
                 </div>
               </div>
+            )}
+
+              </>
+            ) : (
+              <button onClick={toggleDetails} className="card w-full rounded-2xl p-4 text-sm text-slate-400 hover:text-white transition">▼ ดูรายละเอียดทั้งหมด: ตัวชี้วัดเทคนิค, ผลวิเคราะห์ AI ฉบับเต็ม, ความเห็นนักวิเคราะห์ และข่าว</button>
             )}
 
             {/* History Panel */}

@@ -1,7 +1,8 @@
 import { fetchChart } from "@/lib/yahoo";
-import { computeIndicators } from "@/lib/indicators";
+import { computeIndicators, type SignalWeights } from "@/lib/indicators";
+import { getCalibration } from "@/lib/calibrate";
 
-const US = [
+export const US = [
   "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AVGO", "TSLA", "BRK-B", "LLY",
   "JPM", "V", "MA", "UNH", "XOM", "COST", "HD", "PG", "JNJ", "NFLX",
   "ABBV", "BAC", "CRM", "ORCL", "AMD", "KO", "PEP", "MRK", "CVX", "WMT",
@@ -9,7 +10,7 @@ const US = [
   "DIS", "IBM", "AMAT", "CAT", "GE", "NOW", "UBER", "PLTR", "MU", "ISRG",
   "GS", "BKNG", "SPGI", "AXP", "LRCX", "PANW", "ANET", "SHOP", "COIN", "SMCI",
 ];
-const CRYPTO = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT"].map((c) => `${c}-USD`);
+export const CRYPTO = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT"].map((c) => `${c}-USD`);
 
 export interface ScanRow {
   ticker: string;
@@ -26,7 +27,7 @@ export interface ScanRow {
   spark: number[];
 }
 
-async function scanOne(ticker: string): Promise<ScanRow | null> {
+async function scanOne(ticker: string, weights?: SignalWeights): Promise<ScanRow | null> {
   try {
     const chart = await fetchChart(ticker, "1d", 180);
     const r = chart?.chart?.result?.[0];
@@ -36,7 +37,7 @@ async function scanOne(ticker: string): Promise<ScanRow | null> {
       .filter((b: { c: number; h: number; l: number }) => b.c && b.h && b.l);
     if (bars.length < 60) return null;
     const closes = bars.map((b: { c: number }) => b.c);
-    const ind = computeIndicators(closes, bars.map((b: { h: number }) => b.h), bars.map((b: { l: number }) => b.l), bars.map((b: { v: number }) => b.v), [], []);
+    const ind = computeIndicators(closes, bars.map((b: { h: number }) => b.h), bars.map((b: { l: number }) => b.l), bars.map((b: { v: number }) => b.v), [], [], weights);
     if (!ind) return null;
     const n = closes.length;
     const price = r.meta?.regularMarketPrice ?? closes[n - 1];
@@ -61,9 +62,10 @@ async function scanOne(ticker: string): Promise<ScanRow | null> {
 
 export async function runScan() {
   const all = [...US, ...CRYPTO];
+  const weights = (await getCalibration())?.weights;
   const rows: ScanRow[] = [];
   for (let i = 0; i < all.length; i += 6) {
-    const res = await Promise.all(all.slice(i, i + 6).map(scanOne));
+    const res = await Promise.all(all.slice(i, i + 6).map((t) => scanOne(t, weights)));
     rows.push(...res.filter((x): x is ScanRow => x != null));
   }
   rows.sort((a, b) => b.score - a.score || (b.adx ?? 0) - (a.adx ?? 0));

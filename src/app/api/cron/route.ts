@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sql, initDB } from "@/lib/db";
 import { runScan } from "@/lib/screener";
+import { runCalibration } from "@/lib/calibrate";
+import { saveAccuracy } from "@/lib/accuracy";
 import { computeHoldings, type Position } from "@/lib/portfolio";
 
 export const maxDuration = 300;
@@ -27,6 +29,14 @@ export async function GET(req: NextRequest) {
 
     if (!res.ok) throw new Error("Market overview failed");
     const analysis = await res.json();
+
+    const lastCal = await sql`SELECT created_at FROM analysis_cache WHERE type = 'weights' ORDER BY created_at DESC LIMIT 1`;
+    if (!lastCal.length || Date.now() - new Date(lastCal[0].created_at).getTime() > 7 * 86400_000) {
+      const cal = await runCalibration();
+      await sql`INSERT INTO analysis_cache (symbol, type, result) VALUES ('WEIGHTS', 'weights', ${JSON.stringify(cal)}::jsonb)`;
+    }
+
+    await saveAccuracy().catch(() => null);
 
     const scan = await runScan();
     await sql`INSERT INTO analysis_cache (symbol, type, result) VALUES ('SCREENER', 'screener', ${JSON.stringify(scan)}::jsonb)`;

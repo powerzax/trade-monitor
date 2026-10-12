@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sql, initDB } from "@/lib/db";
+import { getLatestAccuracy } from "@/lib/accuracy";
+import { getCalibration } from "@/lib/calibrate";
 
 export async function POST(req: NextRequest) {
   const data = await req.json();
@@ -50,6 +52,29 @@ Volume Analysis:
 - ต้นทุนเฉลี่ย $${pos.avgCost.toFixed(2)} จำนวน ${pos.qty} หน่วย (ซื้อครั้งแรก ${pos.firstBought})
 - กำไร/ขาดทุนตอนนี้: ${(((data.price - pos.avgCost) / pos.avgCost) * 100).toFixed(2)}%` : "";
 
+  const [acc, cal] = await Promise.all([getLatestAccuracy(), getCalibration()]);
+  const lessons: string[] = [];
+  if (acc && acc.overall.evaluated >= 3) {
+    lessons.push(`คำแนะนำ "Buy" ที่ผ่านมาถูก ${acc.buy.winRate ?? "?"}% (${acc.buy.evaluated} ครั้ง), ผลตอบแทนเฉลี่ย 14 วัน ${acc.buy.avgRet14 ?? "?"}%, ชน TP1 ${acc.buy.tpHits} ครั้ง ชน SL ${acc.buy.slHits} ครั้ง`);
+    if (acc.buyHighScore.evaluated && acc.buyLowScore.evaluated) lessons.push(`เมื่อให้คะแนน ≥7 ถูก ${acc.buyHighScore.winRate}% เทียบกับคะแนน <7 ถูก ${acc.buyLowScore.winRate}%`);
+    const mine = acc.bySymbol?.[String(data.symbol).toUpperCase()];
+    if (mine?.length) lessons.push(`ประวัติคำแนะนำตัวนี้: ${mine.map((o) => `${o.date} ${o.suggestion}${o.score ? `(${o.score})` : ""} → 14 วัน ${o.ret14 ?? "รอ"}%${o.hit ? ` ชน ${o.hit.toUpperCase()}` : ""}`).join("; ")}`);
+  }
+  if (cal?.stats) {
+    const ranked = Object.entries(cal.stats).filter(([, v]) => v && v.count >= 60).sort((a, b) => b[1]!.edge - a[1]!.edge);
+    const fmtSig = ([k, v]: (typeof ranked)[number]) => `${k} (ถูก ${v!.hitRate}%, edge ${v!.edge > 0 ? "+" : ""}${v!.edge}%)`;
+    lessons.push(`ทดสอบย้อนหลัง ${cal.samples.toLocaleString()} จุด (${cal.symbols} ตัว, ${cal.horizonDays} วันข้างหน้า): สัญญาณที่เชื่อได้มากสุด ${ranked.slice(0, 3).map(fmtSig).join(", ")} | เชื่อได้น้อยสุด ${ranked.slice(-3).map(fmtSig).join(", ")}`);
+  }
+  const lessonSection = lessons.length ? `
+บทเรียนจากผลจริงที่ผ่านมา (ใช้ปรับความมั่นใจ ถ้าคำแนะนำคล้ายแบบที่เคยผิดบ่อย ให้ลดคะแนนและบอกเหตุผล):
+${lessons.map((l) => `- ${l}`).join("\n")}` : "";
+
+  const sc = data.sector;
+  const sectorSection = sc ? `
+เทียบกับ${sc.label} (${sc.etf}):
+- 20 วัน: ตัวนี้ ${sc.stockPerf20d}% vs กลุ่ม ${sc.sectorPerf20d}% → ${sc.rs20 > 0 ? "แข็งกว่ากลุ่ม" : "อ่อนกว่ากลุ่ม"} ${sc.rs20}%
+- 60 วัน: ตัวนี้ ${sc.stockPerf60d}% vs กลุ่ม ${sc.sectorPerf60d}% → ${sc.rs60 > 0 ? "แข็งกว่ากลุ่ม" : "อ่อนกว่ากลุ่ม"} ${sc.rs60}%` : "";
+
   const confluenceSection = ind?.confluence ? `
 Confluence Score: ${ind.confluence.score}/7 (${ind.confluence.signal.replace("_", " ").toUpperCase()})
 - Signals: ${ind.confluence.details.join(" | ") || "none"}` : "";
@@ -85,11 +110,13 @@ Technical Indicators:
 - ราคาเทียบ MA: ${data.price > ind?.ma20 ? "เหนือ MA20 ✓" : "ใต้ MA20 ✗"} ${ind?.ma50 ? data.price > ind.ma50 ? "| เหนือ MA50 ✓" : "| ใต้ MA50 ✗" : ""} ${ind?.ma200 ? data.price > ind.ma200 ? "| เหนือ MA200 ✓ (Bull market)" : "| ใต้ MA200 ✗ (Bear market)" : ""}
 - แนวรับ (Swing Low): $${ind?.support?.map((s: number) => s.toFixed(2)).join(", ")}
 - แนวต้าน (Swing High): $${ind?.resistance?.map((r: number) => r.toFixed(2)).join(", ")}
-${volumeSection}${trendStrengthSection}${weeklySection}${confluenceSection}${marketSection}${earningsSection}${projectionSection}${positionSection}${analystSection}${fearGreedSection}${newsSection}
+${volumeSection}${trendStrengthSection}${weeklySection}${confluenceSection}${marketSection}${sectorSection}${earningsSection}${projectionSection}${positionSection}${lessonSection}${analystSection}${fearGreedSection}${newsSection}
 
 วิเคราะห์ครบทุกมิติ แล้วตอบเป็น JSON เท่านั้น (ห้ามมีข้อความนอก JSON) ฟิลด์ราคาและตัวเลขทุกตัวต้องเป็น number ล้วน ห้ามใส่ $ หรือช่วงราคา:
 {
   "tldr": "สรุปสั้น 1-2 ประโยค สำหรับคนไม่อยากอ่านยาว บอกว่าตอนนี้ควรทำอะไร",
+  "oneLiner": "ประโยคเดียวไม่เกิน 15 คำ ภาษาพูดง่ายๆ ว่าควรทำอะไรตอนนี้ พร้อมราคา เช่น รอให้ลงมา $226 ค่อยซื้อ",
+  "confidenceNote": "1 ประโยค บอกว่ามั่นใจแค่ไหนและทำไม อ้างอิงบทเรียนจากผลที่ผ่านมาถ้ามี",
   "trend": "bullish" | "bearish" | "neutral",
   "trendTH": "ขาขึ้น" | "ขาลง" | "Sideway",
   "score": 1-10,

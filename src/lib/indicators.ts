@@ -1,6 +1,13 @@
+export type SignalKey =
+  | "rsi_oversold" | "rsi_overbought" | "macd_rising" | "macd_falling" | "macd_cross_up" | "macd_cross_down"
+  | "above_ma20" | "below_ma20" | "above_ma50" | "below_ma50" | "near_support" | "near_resistance"
+  | "volume_bullish" | "volume_bearish" | "weekly_bull" | "weekly_bear";
+
+export type SignalWeights = Partial<Record<SignalKey, number>>;
+
 export function computeIndicators(
   closes: number[], highs: number[], lows: number[], volumes: number[],
-  weeklyCloses: number[], weeklyVolumes: number[]
+  weeklyCloses: number[], weeklyVolumes: number[], weights?: SignalWeights
 ) {
   const n = closes.length;
   if (n < 26) return null;
@@ -69,52 +76,38 @@ export function computeIndicators(
   const weeklyVolRatio = weeklyAvgVol && weeklyVolumes.length
     ? weeklyVolumes[weeklyVolumes.length - 1] / weeklyAvgVol : null;
 
-  // --- Confluence Score (-7 to +7, positive = bullish) ---
-  let confluence = 0;
-  const confluenceDetails: string[] = [];
+  // --- Confluence: each signal votes ±1, scaled by its backtested weight ---
+  const signals: { key: SignalKey; dir: 1 | -1; label: string }[] = [];
+  const add = (key: SignalKey, dir: 1 | -1, label: string) => signals.push({ key, dir, label });
 
-  // RSI signal
-  if (rsi < 40) { confluence++; confluenceDetails.push(`RSI ${rsi.toFixed(0)} (oversold +1)`); }
-  else if (rsi > 65) { confluence--; confluenceDetails.push(`RSI ${rsi.toFixed(0)} (overbought -1)`); }
+  if (rsi < 40) add("rsi_oversold", 1, `RSI ${rsi.toFixed(0)} oversold`);
+  else if (rsi > 65) add("rsi_overbought", -1, `RSI ${rsi.toFixed(0)} overbought`);
 
-  // RSI direction
-  if (rsi > rsiPrev) { confluence += 0.5; }
-  else { confluence -= 0.5; }
+  if (histCurrent > 0 && histCurrent > histPrev) add("macd_rising", 1, "MACD hist rising");
+  else if (histCurrent < 0 && histCurrent < histPrev) add("macd_falling", -1, "MACD hist falling");
 
-  // MACD histogram rising/falling
-  if (histCurrent > 0 && histCurrent > histPrev) { confluence++; confluenceDetails.push("MACD hist rising +1"); }
-  else if (histCurrent < 0 && histCurrent < histPrev) { confluence--; confluenceDetails.push("MACD hist falling -1"); }
+  if (macdCurrent > signalCurrent && macdPrev <= signalLine[signalLine.length - 2]) add("macd_cross_up", 1, "MACD crossover bullish");
+  else if (macdCurrent < signalCurrent && macdPrev >= signalLine[signalLine.length - 2]) add("macd_cross_down", -1, "MACD crossover bearish");
 
-  // MACD crossover
-  if (macdCurrent > signalCurrent && macdPrev <= signalLine[signalLine.length - 2]) {
-    confluence++; confluenceDetails.push("MACD crossover bullish +1");
-  } else if (macdCurrent < signalCurrent && macdPrev >= signalLine[signalLine.length - 2]) {
-    confluence--; confluenceDetails.push("MACD crossover bearish -1");
-  }
+  if (price > ma20) add("above_ma20", 1, "Above MA20"); else add("below_ma20", -1, "Below MA20");
+  if (ma50) { if (price > ma50) add("above_ma50", 1, "Above MA50"); else add("below_ma50", -1, "Below MA50"); }
 
-  // Price vs MA20/MA50
-  if (price > ma20) { confluence++; confluenceDetails.push("Above MA20 +1"); }
-  else { confluence--; confluenceDetails.push("Below MA20 -1"); }
-  if (ma50 && price > ma50) { confluence++; confluenceDetails.push("Above MA50 +1"); }
-  else if (ma50) { confluence--; }
-
-  // Near support/resistance
   const nearestSupport = support[0];
   const nearestResist = resistance[0];
-  if (nearestSupport && price <= nearestSupport * 1.03) {
-    confluence++; confluenceDetails.push("Near support +1");
-  }
-  if (nearestResist && price >= nearestResist * 0.97) {
-    confluence--; confluenceDetails.push("Near resistance -1");
-  }
+  if (nearestSupport && price <= nearestSupport * 1.03) add("near_support", 1, "Near support");
+  if (nearestResist && price >= nearestResist * 0.97) add("near_resistance", -1, "Near resistance");
 
-  // Volume pattern
-  if (volPattern === "bullish") { confluence++; confluenceDetails.push("Bullish volume +1"); }
-  else if (volPattern === "bearish") { confluence--; confluenceDetails.push("Bearish volume -1"); }
+  if (volPattern === "bullish") add("volume_bullish", 1, "Bullish volume");
+  else if (volPattern === "bearish") add("volume_bearish", -1, "Bearish volume");
 
-  // Weekly trend alignment
-  if (weeklyTrend === "bullish") { confluence++; confluenceDetails.push("Weekly trend bullish +1"); }
-  else if (weeklyTrend === "bearish") { confluence--; confluenceDetails.push("Weekly trend bearish -1"); }
+  if (weeklyTrend === "bullish") add("weekly_bull", 1, "Weekly trend bullish");
+  else if (weeklyTrend === "bearish") add("weekly_bear", -1, "Weekly trend bearish");
+
+  const weighted = signals.map((x) => ({ ...x, weight: weights?.[x.key] ?? 1 }));
+  const confluence = weighted.reduce((a, x) => a + x.dir * x.weight, 0) + (rsi > rsiPrev ? 0.5 : -0.5);
+  const confluenceDetails = weighted
+    .filter((x) => x.weight > 0.05)
+    .map((x) => `${x.label} ${x.dir > 0 ? "+" : "-"}${x.weight === 1 ? "1" : x.weight.toFixed(1)}`);
 
   // ADX trend strength
   const trendStrength = adx
@@ -146,7 +139,7 @@ export function computeIndicators(
     adx: adx ? Math.round(adx * 10) / 10 : null,
     trendStrength,
     weekly: { trend: weeklyTrend, rsi: weeklyRsi, volRatio: weeklyVolRatio ? Math.round(weeklyVolRatio * 100) / 100 : null },
-    confluence: { score: confluenceScore, signal: confluenceSignal, details: confluenceDetails },
+    confluence: { score: confluenceScore, signal: confluenceSignal, details: confluenceDetails, signals: weighted.map(({ key, dir, weight }) => ({ key, dir, weight })) },
   };
 }
 
