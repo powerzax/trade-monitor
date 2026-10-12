@@ -1,28 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { fetchChart, fetchQuoteSummary, fetchMarketRegime, dayKey } from "@/lib/yahoo";
 
-const YF_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-  "Accept": "application/json",
-};
-
-async function fetchYahoo(ticker: string) {
-  const period1 = Math.floor((Date.now() - 90 * 24 * 60 * 60 * 1000) / 1000);
-  const period2 = Math.floor(Date.now() / 1000);
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&period1=${period1}&period2=${period2}&includePrePost=false`;
-  const res = await fetch(url, { headers: YF_HEADERS, next: { revalidate: 300 } });
-  if (!res.ok) throw new Error(`Yahoo Finance error: ${res.status}`);
-  return res.json();
+async function fetchYahoo(ticker: string, interval = "1d", days = 180) {
+  return fetchChart(ticker, interval, days);
 }
 
 async function fetchFundamentals(ticker: string) {
-  try {
-    const modules = "recommendationTrend,financialData,defaultKeyStatistics,earningsTrend";
-    const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=${modules}`;
-    const res = await fetch(url, { headers: YF_HEADERS, next: { revalidate: 3600 } });
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json?.quoteSummary?.result?.[0] ?? null;
-  } catch { return null; }
+  return fetchQuoteSummary(ticker, "recommendationTrend,financialData,defaultKeyStatistics,earningsTrend,calendarEvents");
 }
 
 async function fetchFearGreed() {
@@ -48,10 +32,12 @@ export async function GET(req: NextRequest) {
   try {
     const ticker = isCrypto ? `${symbol.toUpperCase()}-USD` : symbol.toUpperCase();
 
-    const [chartData, fundamentals, fearGreed] = await Promise.all([
-      fetchYahoo(ticker),
+    const [chartData, weeklyData, fundamentals, fearGreed, regime] = await Promise.all([
+      fetchYahoo(ticker, "1d", 180),
+      fetchYahoo(ticker, "1wk", 365).catch(() => null),
       isCrypto ? null : fetchFundamentals(ticker),
       fetchFearGreed(),
+      fetchMarketRegime(),
     ]);
 
     const result = chartData?.chart?.result?.[0];
@@ -73,13 +59,29 @@ export async function GET(req: NextRequest) {
       .filter((c) => c.open && c.high && c.low && c.close);
 
     const closes = candles.map((c) => c.close as number);
+    const highs = candles.map((c) => c.high as number);
+    const lows = candles.map((c) => c.low as number);
     const volumes = candles.map((c) => c.volume as number);
-    const indicators = computeIndicators(closes, volumes);
+
+    // Weekly data
+    const weeklyResult = weeklyData?.chart?.result?.[0];
+    const weeklyCandles = weeklyResult ? (() => {
+      const wts: number[] = weeklyResult.timestamp ?? [];
+      const wq = weeklyResult.indicators?.quote?.[0] ?? {};
+      return wts.map((t: number, i: number) => ({
+        time: t, open: wq.open?.[i], high: wq.high?.[i],
+        low: wq.low?.[i], close: wq.close?.[i], volume: wq.volume?.[i] ?? 0,
+      })).filter((c) => c.open && c.close);
+    })() : [];
+    const weeklyCloses = weeklyCandles.map((c) => c.close as number);
+    const weeklyVolumes = weeklyCandles.map((c) => c.volume as number);
+
+    const indicators = computeIndicators(closes, highs, lows, volumes, weeklyCloses, weeklyVolumes);
 
     const high52w = meta.fiftyTwoWeekHigh ?? Math.max(...closes);
     const low52w = meta.fiftyTwoWeekLow ?? Math.min(...closes);
     const price = meta.regularMarketPrice ?? closes[closes.length - 1];
-    const prevClose = meta.previousClose ?? meta.chartPreviousClose ?? closes[closes.length - 2];
+    const prevClose = closes[closes.length - 2];
     const change = prevClose ? price - prevClose : 0;
     const changePct = prevClose ? (change / prevClose) * 100 : 0;
 
@@ -111,7 +113,44 @@ export async function GET(req: NextRequest) {
       };
     }
 
+    // Beta vs S&P 500 from overlapping daily log returns
+    let beta: number | null = null;
+    {
+      const xs: number[] = [], ys: number[] = [];
+      for (let i = 1; i < candles.length; i++) {
+        const m = regime.spyReturns.get(dayKey(candles[i].time));
+        if (m === undefined) continue;
+        xs.push(m);
+        ys.push(Math.log((candles[i].close as number) / (candles[i - 1].close as number)));
+      }
+      if (xs.length >= 40) {
+        const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
+        const my = ys.reduce((a, b) => a + b, 0) / ys.length;
+        let cov = 0, vx = 0;
+        for (let i = 0; i < xs.length; i++) { cov += (xs[i] - mx) * (ys[i] - my); vx += (xs[i] - mx) ** 2; }
+        beta = vx ? Math.round((cov / vx) * 100) / 100 : null;
+      }
+    }
+
+    const earnTs: number | undefined = fundamentals?.calendarEvents?.earnings?.earningsDate?.[0]?.raw;
+    const earnings = earnTs && earnTs * 1000 > Date.now() - 86400000
+      ? { date: new Date(earnTs * 1000).toISOString().slice(0, 10), daysUntil: Math.ceil((earnTs * 1000 - Date.now()) / 86400000) }
+      : null;
+
+    const projection = computeProjection(
+      candles.map((c) => ({ time: c.time, close: c.close as number })),
+      indicators?.confluence?.score ?? 0,
+      regime.regime,
+      beta ?? 1,
+      isCrypto,
+      earnTs ?? null,
+    );
+
     return NextResponse.json({
+      beta,
+      earnings,
+      projection,
+      market: { spy: regime.spy, qqq: regime.qqq, vix: regime.vix, regime: regime.regime },
       symbol: ticker,
       name: meta.longName ?? meta.shortName ?? ticker,
       price,
@@ -132,40 +171,224 @@ export async function GET(req: NextRequest) {
   }
 }
 
-function computeIndicators(closes: number[], volumes: number[]) {
+function computeIndicators(
+  closes: number[], highs: number[], lows: number[], volumes: number[],
+  weeklyCloses: number[], weeklyVolumes: number[]
+) {
   const n = closes.length;
   if (n < 26) return null;
 
-  const rsi = computeRSI(closes, 14);
+  // --- RSI ---
+  const rsiArr = computeRSI(closes, 14);
+  const rsi = rsiArr[rsiArr.length - 1];
+  const rsiPrev = rsiArr[rsiArr.length - 2] ?? rsi;
+
+  // --- MACD ---
   const ema12 = computeEMA(closes, 12);
   const ema26 = computeEMA(closes, 26);
   const macdLine = ema12.map((v, i) => v - ema26[i]);
   const signalLine = computeEMA(macdLine.slice(25), 9);
   const macdCurrent = macdLine[n - 1];
+  const macdPrev = macdLine[n - 2];
   const signalCurrent = signalLine[signalLine.length - 1];
+  const histCurrent = macdCurrent - signalCurrent;
+  const histPrev = macdPrev - signalLine[signalLine.length - 2];
+
+  // --- Bollinger Bands ---
   const bb = computeBB(closes, 20, 2);
+  const bbWidth = (bb.upper - bb.lower) / bb.middle; // squeeze indicator
+
+  // --- Moving Averages ---
   const ma20 = avg(closes.slice(n - 20));
   const ma50 = n >= 50 ? avg(closes.slice(n - 50)) : null;
-  const recentHigh = Math.max(...closes.slice(n - 20));
-  const recentLow = Math.min(...closes.slice(n - 20));
-  const pivot = (recentHigh + recentLow + closes[n - 1]) / 3;
+  const ma100 = n >= 100 ? avg(closes.slice(n - 100)) : null;
+  const ma200 = n >= 200 ? avg(closes.slice(n - 200)) : null;
+  const price = closes[n - 1];
 
-  // Volume analysis
-  const avgVol = avg(volumes.slice(n - 20));
-  const currentVol = volumes[n - 1];
-  const volRatio = avgVol > 0 ? currentVol / avgVol : 1;
+  // EMA slope (trend strength proxy): compare EMA20 now vs 5 days ago
+  const ema20 = computeEMA(closes, 20);
+  const ema20Slope = ema20.length >= 6
+    ? (ema20[ema20.length - 1] - ema20[ema20.length - 6]) / ema20[ema20.length - 6] * 100
+    : 0;
+
+  // --- ADX (trend strength) ---
+  const adx = n >= 28 ? computeADX(highs, lows, closes, 14) : null;
+
+  // --- Proper Swing S/R ---
+  const { support, resistance } = computeSwingSR(highs, lows, closes, 5);
+
+  // --- Volume Analysis ---
+  const avgVol20 = avg(volumes.slice(n - 20));
+  const volRatio = avgVol20 > 0 ? volumes[n - 1] / avgVol20 : 1;
+  // Bullish volume: price up + vol above avg OR price down + vol below avg
+  const priceChange = closes[n - 1] - closes[n - 2];
+  const volPattern: "bullish" | "bearish" | "neutral" =
+    priceChange > 0 && volRatio > 1.2 ? "bullish" :
+    priceChange < 0 && volRatio > 1.2 ? "bearish" :
+    priceChange > 0 && volRatio < 0.8 ? "weak_bullish" as "neutral" :
+    "neutral";
+
+  // --- Weekly Trend ---
+  let weeklyTrend: "bullish" | "bearish" | "neutral" = "neutral";
+  let weeklyRsi: number | null = null;
+  if (weeklyCloses.length >= 20) {
+    const wMa20 = avg(weeklyCloses.slice(-20));
+    const wPrice = weeklyCloses[weeklyCloses.length - 1];
+    const wRsiArr = computeRSI(weeklyCloses, 14);
+    weeklyRsi = Math.round(wRsiArr[wRsiArr.length - 1] * 10) / 10;
+    weeklyTrend = wPrice > wMa20 ? "bullish" : "bearish";
+  }
+  const weeklyAvgVol = weeklyVolumes.length >= 10 ? avg(weeklyVolumes.slice(-10)) : null;
+  const weeklyVolRatio = weeklyAvgVol && weeklyVolumes.length
+    ? weeklyVolumes[weeklyVolumes.length - 1] / weeklyAvgVol : null;
+
+  // --- Confluence Score (-7 to +7, positive = bullish) ---
+  let confluence = 0;
+  const confluenceDetails: string[] = [];
+
+  // RSI signal
+  if (rsi < 40) { confluence++; confluenceDetails.push(`RSI ${rsi.toFixed(0)} (oversold +1)`); }
+  else if (rsi > 65) { confluence--; confluenceDetails.push(`RSI ${rsi.toFixed(0)} (overbought -1)`); }
+
+  // RSI direction
+  if (rsi > rsiPrev) { confluence += 0.5; }
+  else { confluence -= 0.5; }
+
+  // MACD histogram rising/falling
+  if (histCurrent > 0 && histCurrent > histPrev) { confluence++; confluenceDetails.push("MACD hist rising +1"); }
+  else if (histCurrent < 0 && histCurrent < histPrev) { confluence--; confluenceDetails.push("MACD hist falling -1"); }
+
+  // MACD crossover
+  if (macdCurrent > signalCurrent && macdPrev <= signalLine[signalLine.length - 2]) {
+    confluence++; confluenceDetails.push("MACD crossover bullish +1");
+  } else if (macdCurrent < signalCurrent && macdPrev >= signalLine[signalLine.length - 2]) {
+    confluence--; confluenceDetails.push("MACD crossover bearish -1");
+  }
+
+  // Price vs MA20/MA50
+  if (price > ma20) { confluence++; confluenceDetails.push("Above MA20 +1"); }
+  else { confluence--; confluenceDetails.push("Below MA20 -1"); }
+  if (ma50 && price > ma50) { confluence++; confluenceDetails.push("Above MA50 +1"); }
+  else if (ma50) { confluence--; }
+
+  // Near support/resistance
+  const nearestSupport = support[0];
+  const nearestResist = resistance[0];
+  if (nearestSupport && price <= nearestSupport * 1.03) {
+    confluence++; confluenceDetails.push("Near support +1");
+  }
+  if (nearestResist && price >= nearestResist * 0.97) {
+    confluence--; confluenceDetails.push("Near resistance -1");
+  }
+
+  // Volume pattern
+  if (volPattern === "bullish") { confluence++; confluenceDetails.push("Bullish volume +1"); }
+  else if (volPattern === "bearish") { confluence--; confluenceDetails.push("Bearish volume -1"); }
+
+  // Weekly trend alignment
+  if (weeklyTrend === "bullish") { confluence++; confluenceDetails.push("Weekly trend bullish +1"); }
+  else if (weeklyTrend === "bearish") { confluence--; confluenceDetails.push("Weekly trend bearish -1"); }
+
+  // ADX trend strength
+  const trendStrength = adx
+    ? adx >= 40 ? "strong" : adx >= 25 ? "moderate" : "weak"
+    : "unknown";
+
+  const confluenceScore = Math.round(Math.max(-7, Math.min(7, confluence)));
+  const confluenceSignal: "strong_buy" | "buy" | "neutral" | "sell" | "strong_sell" =
+    confluenceScore >= 4 ? "strong_buy" :
+    confluenceScore >= 2 ? "buy" :
+    confluenceScore <= -4 ? "strong_sell" :
+    confluenceScore <= -2 ? "sell" : "neutral";
 
   return {
-    rsi: rsi[rsi.length - 1],
-    macd: { macd: macdCurrent, signal: signalCurrent, histogram: macdCurrent - signalCurrent },
-    bb: { upper: bb.upper, middle: bb.middle, lower: bb.lower },
+    rsi: Math.round(rsi * 10) / 10,
+    rsiDirection: rsi > rsiPrev ? "rising" : "falling",
+    macd: { macd: macdCurrent, signal: signalCurrent, histogram: histCurrent },
+    bb: { upper: bb.upper, middle: bb.middle, lower: bb.lower, width: Math.round(bbWidth * 1000) / 10 },
     ma20,
     ma50,
-    support: [recentLow, pivot - (recentHigh - recentLow) * 0.382],
-    resistance: [recentHigh, pivot + (recentHigh - recentLow) * 0.382],
+    ma100,
+    ma200,
+    ema20Slope: Math.round(ema20Slope * 100) / 100,
+    support,
+    resistance,
     volumeRatio: Math.round(volRatio * 100) / 100,
-    avgVolume20d: Math.round(avgVol),
+    avgVolume20d: Math.round(avgVol20),
+    volumePattern: volPattern,
+    adx: adx ? Math.round(adx * 10) / 10 : null,
+    trendStrength,
+    weekly: { trend: weeklyTrend, rsi: weeklyRsi, volRatio: weeklyVolRatio ? Math.round(weeklyVolRatio * 100) / 100 : null },
+    confluence: { score: confluenceScore, signal: confluenceSignal, details: confluenceDetails },
   };
+}
+
+// Swing high/low based Support & Resistance
+function computeSwingSR(highs: number[], lows: number[], closes: number[], lookback = 5) {
+  const n = highs.length;
+  const swingHighs: number[] = [];
+  const swingLows: number[] = [];
+
+  for (let i = lookback; i < n - lookback; i++) {
+    const h = highs[i];
+    const l = lows[i];
+    if (highs.slice(i - lookback, i).every(v => v <= h) && highs.slice(i + 1, i + lookback + 1).every(v => v <= h)) {
+      swingHighs.push(h);
+    }
+    if (lows.slice(i - lookback, i).every(v => v >= l) && lows.slice(i + 1, i + lookback + 1).every(v => v >= l)) {
+      swingLows.push(l);
+    }
+  }
+
+  const price = closes[n - 1];
+  // Support: swing lows below current price, sorted descending (closest first)
+  const support = swingLows
+    .filter(v => v < price)
+    .sort((a, b) => b - a)
+    .slice(0, 3);
+
+  // Resistance: swing highs above current price, sorted ascending (closest first)
+  const resistance = swingHighs
+    .filter(v => v > price)
+    .sort((a, b) => a - b)
+    .slice(0, 3);
+
+  // Fallback if not enough swing points
+  if (support.length === 0) support.push(Math.min(...lows.slice(n - 20)));
+  if (resistance.length === 0) resistance.push(Math.max(...highs.slice(n - 20)));
+
+  return { support, resistance };
+}
+
+// ADX (Average Directional Index) — measures trend strength 0-100
+function computeADX(highs: number[], lows: number[], closes: number[], period = 14): number {
+  const n = highs.length;
+  const trArr: number[] = [];
+  const dmPlusArr: number[] = [];
+  const dmMinusArr: number[] = [];
+
+  for (let i = 1; i < n; i++) {
+    const tr = Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1]));
+    const dmPlus = highs[i] - highs[i - 1] > lows[i - 1] - lows[i] ? Math.max(highs[i] - highs[i - 1], 0) : 0;
+    const dmMinus = lows[i - 1] - lows[i] > highs[i] - highs[i - 1] ? Math.max(lows[i - 1] - lows[i], 0) : 0;
+    trArr.push(tr);
+    dmPlusArr.push(dmPlus);
+    dmMinusArr.push(dmMinus);
+  }
+
+  const smoothTR = computeEMA(trArr, period);
+  const smoothPlus = computeEMA(dmPlusArr, period);
+  const smoothMinus = computeEMA(dmMinusArr, period);
+
+  const diPlus = smoothPlus.map((v, i) => smoothTR[i] ? (v / smoothTR[i]) * 100 : 0);
+  const diMinus = smoothMinus.map((v, i) => smoothTR[i] ? (v / smoothTR[i]) * 100 : 0);
+  const dx = diPlus.map((v, i) => {
+    const sum = v + diMinus[i];
+    return sum ? (Math.abs(v - diMinus[i]) / sum) * 100 : 0;
+  });
+
+  const adxArr = computeEMA(dx.slice(period), period);
+  return adxArr[adxArr.length - 1];
 }
 
 function avg(arr: number[]) {
@@ -211,4 +434,46 @@ function computeBB(data: number[], period: number, mult: number) {
   const middle = avg(slice);
   const variance = slice.reduce((s, v) => s + (v - middle) ** 2, 0) / period;
   return { upper: middle + mult * Math.sqrt(variance), middle, lower: middle - mult * Math.sqrt(variance) };
+}
+
+// Probability cone for the next N sessions: lognormal around a small drift that leans with
+// the confluence score and the broad-market regime. Earnings add a one-off jump variance.
+function computeProjection(
+  pts: { time: number; close: number }[],
+  confluence: number,
+  regime: "risk_on" | "risk_off" | "neutral",
+  beta: number,
+  isCrypto: boolean,
+  earningsTs: number | null,
+  horizon = 10,
+) {
+  const n = pts.length;
+  if (n < 30) return null;
+  const rets: number[] = [];
+  for (let i = Math.max(1, n - 60); i < n; i++) rets.push(Math.log(pts[i].close / pts[i - 1].close));
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const sigma = Math.sqrt(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / (rets.length - 1));
+  const regimeTilt = regime === "risk_on" ? 1 : regime === "risk_off" ? -1 : 0;
+  const mu = sigma * (0.12 * (confluence / 7) + 0.04 * regimeTilt * Math.max(0.5, Math.min(beta, 2)));
+
+  const last = pts[n - 1];
+  const z = { p10: -1.2816, p25: -0.6745, p75: 0.6745, p90: 1.2816 };
+  const points = [{ time: last.time, p10: last.close, p25: last.close, p50: last.close, p75: last.close, p90: last.close }];
+  let t = last.time;
+  let jumpVar = 0;
+  for (let k = 1; k <= horizon; k++) {
+    do { t += 86400; } while (!isCrypto && [0, 6].includes(new Date(t * 1000).getUTCDay()));
+    if (earningsTs && !jumpVar && t >= earningsTs) jumpVar = (sigma * 2.5) ** 2;
+    const sd = Math.sqrt(sigma * sigma * k + jumpVar);
+    const center = Math.log(last.close) + mu * k;
+    const at = (zz: number) => Math.round(Math.exp(center + zz * sd) * 100) / 100;
+    points.push({ time: t, p10: at(z.p10), p25: at(z.p25), p50: at(0), p75: at(z.p75), p90: at(z.p90) });
+  }
+  return {
+    horizon,
+    sigmaDaily: Math.round(sigma * 10000) / 100,
+    muDaily: Math.round(mu * 10000) / 100,
+    earningsInHorizon: jumpVar > 0,
+    points,
+  };
 }

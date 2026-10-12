@@ -1,8 +1,9 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import dynamic from "next/dynamic";
 
 const CandleChart = dynamic(() => import("@/components/CandleChart"), { ssr: false });
+import type { ProjectionPoint, PriceLine } from "@/components/CandleChart";
 
 const POPULAR = [
   { symbol: "AAPL", label: "AAPL", crypto: false },
@@ -53,8 +54,22 @@ interface StockData {
     resistance: number[];
     volumeRatio: number;
     avgVolume20d: number;
+    volumePattern?: string;
+    adx?: number | null;
+    trendStrength?: string;
+    weekly?: { trend: string; rsi: number | null; volRatio: number | null };
+    confluence?: { score: number; signal: string; details: string[] };
   } | null;
   analystData: AnalystData | null;
+  beta?: number | null;
+  earnings?: { date: string; daysUntil: number } | null;
+  projection?: { horizon: number; sigmaDaily: number; muDaily: number; earningsInHorizon: boolean; points: ProjectionPoint[] } | null;
+  market?: {
+    spy: { changePct: number; perf20d: number; aboveMa50: boolean } | null;
+    qqq: { changePct: number; perf20d: number; aboveMa50: boolean } | null;
+    vix: number | null;
+    regime: "risk_on" | "risk_off" | "neutral";
+  };
   fearGreed: { score: number; rating: string } | null;
 }
 
@@ -71,7 +86,35 @@ interface AnalysisNewsItem {
   impact: string;
 }
 
+interface Position {
+  id: number;
+  symbol: string;
+  crypto: boolean;
+  name: string | null;
+  price: number;
+  qty: number;
+  bought_at: string;
+}
+
+interface Holding {
+  symbol: string;
+  crypto: boolean;
+  name: string | null;
+  qty: number;
+  cost: number;
+  avgCost: number;
+  firstBought: string;
+  lots: Position[];
+}
+
 interface Analysis {
+  positionAdvice?: {
+    action: "Hold" | "TakeProfit" | "CutLoss" | "AddMore";
+    actionTH: string;
+    reason: string;
+    stopForPosition: number | null;
+    targetForPosition: number | null;
+  };
   tldr: string;
   trend: "bullish" | "bearish" | "neutral";
   trendTH: string;
@@ -120,6 +163,16 @@ interface FavAnalysis {
   keyPoint: string;
 }
 
+interface HistoryItem {
+  id: number;
+  created_at: string;
+  suggestion: string;
+  suggestion_th: string;
+  score: number;
+  tldr: string;
+  trend_th: string;
+}
+
 interface MarketOverview {
   marketOverview: string;
   marketMood: "bullish" | "bearish" | "neutral" | "mixed";
@@ -129,17 +182,129 @@ interface MarketOverview {
   topRisk: string;
   bestOpportunity: string;
   fearGreed: { score: number; rating: string } | null;
+  changesSinceLast?: string | null;
+  actionPlan?: string[];
+  stocks?: Quote[];
+  cryptos?: Quote[];
+  createdAt?: string;
+}
+
+interface Quote {
+  ticker: string;
+  name: string;
+  price: number;
+  changePct: number;
+  perf5d?: number;
+  perf20d?: number;
+  spark?: number[];
+}
+
+function Sparkline({ values, className = "" }: { values?: number[]; className?: string }) {
+  if (!values || values.length < 2) return null;
+  const min = Math.min(...values), max = Math.max(...values);
+  const pts = values.map((v, i) => `${(i / (values.length - 1)) * 100},${30 - ((v - min) / (max - min || 1)) * 28 - 1}`).join(" ");
+  const up = values[values.length - 1] >= values[0];
+  const c = up ? "#6ee7b7" : "#f472b6";
+  const id = `sg-${up ? "u" : "d"}`;
+  return (
+    <svg viewBox="0 0 100 30" preserveAspectRatio="none" className={className}>
+      <defs><linearGradient id={id} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={c} stopOpacity="0.35" /><stop offset="100%" stopColor={c} stopOpacity="0" /></linearGradient></defs>
+      <polygon points={`0,30 ${pts} 100,30`} fill={`url(#${id})`} />
+      <polyline points={pts} fill="none" stroke={c} strokeWidth="1.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+    </svg>
+  );
 }
 
 const sentimentColor = {
   positive: "text-green-400 bg-green-900/30 border-green-800",
   negative: "text-red-400 bg-red-900/30 border-red-800",
-  neutral: "text-slate-400 bg-slate-800/50 border-slate-700",
+  neutral: "text-slate-400 bg-white/[0.04] border-slate-700",
 };
 const sentimentLabel = { positive: "บวก", negative: "ลบ", neutral: "กลาง" };
 
+function normCdf(x: number) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const d = 0.3989423 * Math.exp((-x * x) / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return x > 0 ? 1 - p : p;
+}
+
+// Chance the price ends above `level` at the end of the projection, read off the lognormal cone.
+function probAbove(points: ProjectionPoint[] | undefined, level: number) {
+  const last = points?.[points.length - 1];
+  if (!last || !(level > 0)) return null;
+  const sd = (Math.log(last.p90) - Math.log(last.p50)) / 1.2816;
+  if (!(sd > 0)) return null;
+  return 1 - normCdf((Math.log(level) - Math.log(last.p50)) / sd);
+}
+
+function money(v: number, digits = 2) {
+  const sign = v < 0 ? "-" : "";
+  return `${sign}$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+}
+
+function fmt(v: unknown, digits = 2): string {
+  if (v == null || v === "") return "-";
+  const n = typeof v === "number" ? v : Number(String(v).replace(/[$,\s]/g, ""));
+  return Number.isFinite(n) ? n.toFixed(digits) : String(v);
+}
+
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"overview" | "detail">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "detail" | "portfolio">("overview");
+  const [positions, setPositions] = useState<Position[]>([]);
+  const [posQuotes, setPosQuotes] = useState<Record<string, Quote>>({});
+  const [posForm, setPosForm] = useState({ symbol: "", crypto: false, price: "", qty: "", boughtAt: new Date().toISOString().slice(0, 10) });
+  const [posError, setPosError] = useState("");
+
+  const holdings: Holding[] = useMemo(() => {
+    const map = new Map<string, Holding>();
+    for (const p of positions) {
+      const h = map.get(p.symbol) ?? { symbol: p.symbol, crypto: p.crypto, name: p.name, qty: 0, cost: 0, avgCost: 0, firstBought: p.bought_at, lots: [] };
+      h.qty += p.qty;
+      h.cost += p.qty * p.price;
+      h.lots.push(p);
+      if (p.bought_at < h.firstBought) h.firstBought = p.bought_at;
+      map.set(p.symbol, h);
+    }
+    return [...map.values()].map((h) => ({ ...h, avgCost: h.cost / h.qty }));
+  }, [positions]);
+
+  useEffect(() => {
+    fetch("/api/positions").then((r) => r.json()).then((j) => setPositions(j.positions ?? [])).catch(() => {});
+  }, []);
+
+  const holdingSymbols = holdings.map((h) => h.symbol).sort().join(",");
+  useEffect(() => {
+    if (!holdingSymbols) return;
+    fetch(`/api/quotes?symbols=${encodeURIComponent(holdingSymbols)}`)
+      .then((r) => r.json())
+      .then((j) => setPosQuotes(Object.fromEntries((j.quotes ?? []).map((q: Quote) => [q.ticker, q]))))
+      .catch(() => {});
+  }, [holdingSymbols]);
+
+  async function addPosition(e: React.FormEvent) {
+    e.preventDefault();
+    setPosError("");
+    const res = await fetch("/api/positions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(posForm),
+    });
+    const j = await res.json();
+    if (j.error) return setPosError(j.error);
+    setPositions((prev) => [j.position, ...prev]);
+    setPosForm((f) => ({ ...f, symbol: "", price: "", qty: "" }));
+  }
+
+  async function deletePosition(id: number) {
+    await fetch(`/api/positions?id=${id}`, { method: "DELETE" });
+    setPositions((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  function openSymbol(ticker: string, crypto: boolean) {
+    const sym = ticker.replace(/-USD$/, "");
+    setQuery(sym); setIsCrypto(crypto); setActiveTab("detail"); search(sym, crypto);
+  }
   const [query, setQuery] = useState("");
   const [isCrypto, setIsCrypto] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -147,6 +312,24 @@ export default function Home() {
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewData, setOverviewData] = useState<MarketOverview | null>(null);
   const [overviewError, setOverviewError] = useState("");
+
+  useEffect(() => {
+    fetch("/api/market-overview")
+      .then((r) => r.json())
+      .then((j) => { if (j.overview) setOverviewData(j.overview); })
+      .catch(() => {});
+    try {
+      const tab = localStorage.getItem("tm.tab");
+      const last = JSON.parse(localStorage.getItem("tm.last") ?? "null");
+      if (tab === "detail" || tab === "portfolio") setActiveTab(tab);
+      if (last?.symbol) { setQuery(last.symbol); setIsCrypto(!!last.crypto); search(last.symbol, !!last.crypto); }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem("tm.tab", activeTab); } catch {}
+  }, [activeTab]);
 
   useEffect(() => {
     fetch("/api/favorites")
@@ -187,7 +370,10 @@ export default function Home() {
   const [data, setData] = useState<StockData | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [analysisCachedAt, setAnalysisCachedAt] = useState<Date | null>(null);
   const [error, setError] = useState("");
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
 
   const isFavorited = data ? favorites.some((f) => f.symbol === data.symbol) : false;
 
@@ -211,11 +397,15 @@ export default function Home() {
   }
 
   async function search(sym: string, crypto: boolean) {
+    try { localStorage.setItem("tm.last", JSON.stringify({ symbol: sym, crypto })); } catch {}
     setLoading(true);
     setError("");
     setData(null);
     setAnalysis(null);
+    setAnalysisCachedAt(null);
     setNews([]);
+    setHistory([]);
+    setShowHistory(false);
     try {
       const ticker = crypto ? `${sym.toUpperCase()}-USD` : sym.toUpperCase();
       const [stockRes, newsRes] = await Promise.all([
@@ -226,9 +416,23 @@ export default function Home() {
       if (stockJson.error) throw new Error(stockJson.error);
       const newsJson = await newsRes.json();
       const newsItems: NewsItem[] = newsJson.items ?? [];
+
       setData(stockJson);
       setNews(newsItems);
-      await analyze(stockJson, newsItems);
+
+      // Load cache + history independently so failures don't break the main flow
+      const [cacheJson, histJson] = await Promise.all([
+        fetch(`/api/analysis-cache?symbol=${ticker}`).then(r => r.json()).catch(() => ({ cache: null })),
+        fetch(`/api/analysis-history?symbol=${ticker}`).then(r => r.json()).catch(() => ({ history: [] })),
+      ]);
+      setHistory(histJson.history ?? []);
+
+      if (cacheJson.cache) {
+        setAnalysis(cacheJson.cache.result);
+        setAnalysisCachedAt(new Date(cacheJson.cache.createdAt));
+      } else {
+        await analyze(stockJson, newsItems);
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
     } finally {
@@ -238,22 +442,55 @@ export default function Home() {
 
   async function analyze(stockData: StockData, newsItems: NewsItem[]) {
     setAnalyzing(true);
+    setAnalysisCachedAt(null);
     try {
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...stockData,
+          position: holdings.find((h) => h.symbol === stockData.symbol) ?? null,
           news: newsItems,
           analystData: stockData.analystData,
           fearGreed: stockData.fearGreed,
         }),
       });
       const json = await res.json();
-      if (!json.error) setAnalysis(json);
+      if (!json.error) {
+        setAnalysis(json);
+        // รีโหลด history หลังวิเคราะห์ใหม่
+        fetch(`/api/analysis-history?symbol=${stockData.symbol}`)
+          .then(r => r.json()).then(j => setHistory(j.history ?? [])).catch(() => {});
+      }
     } finally {
       setAnalyzing(false);
     }
+  }
+
+  function formatTimeAgo(date: Date) {
+    const diff = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (diff < 60) return `${diff} วินาทีที่แล้ว`;
+    if (diff < 3600) return `${Math.floor(diff / 60)} นาทีที่แล้ว`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} ชั่วโมงที่แล้ว`;
+    return `${Math.floor(diff / 86400)} วันที่แล้ว`;
+  }
+
+  function formatThaiDate(dateStr: string) {
+    const d = new Date(dateStr);
+    return d.toLocaleString("th-TH", { timeZone: "Asia/Bangkok", day: "numeric", month: "short", year: "2-digit", hour: "2-digit", minute: "2-digit" });
+  }
+
+  async function deleteHistory(id: number) {
+    await fetch(`/api/analysis-cache?id=${id}`, { method: "DELETE" });
+    setHistory(prev => prev.filter(h => h.id !== id));
+  }
+
+  async function deleteByDate(symbol: string, date: string) {
+    await fetch(`/api/analysis-cache?symbol=${symbol}&date=${date}`, { method: "DELETE" });
+    setHistory(prev => prev.filter(h => {
+      const d = new Date(h.created_at).toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+      return d !== date;
+    }));
   }
 
   const trendColor = { bullish: "text-green-400", bearish: "text-red-400", neutral: "text-gray-400" };
@@ -272,45 +509,76 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0e1a] text-slate-200">
-      <header className="border-b border-slate-800 px-6 py-4">
+    <div className="min-h-screen text-slate-200">
+      <header className="sticky top-0 z-30 border-b border-white/5 bg-[#0a0915]/60 backdrop-blur-xl px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="text-2xl">📈</div>
+            <div className="assistant-orb relative grid h-10 w-10 place-items-center rounded-full text-lg"><span className="assistant-orb-ring" />📈</div>
             <div>
-              <h1 className="text-xl font-bold text-white">Trade Monitor</h1>
+              <h1 className="text-xl font-bold bg-gradient-to-r from-white via-violet-200 to-violet-400 bg-clip-text text-transparent">Trade Monitor</h1>
               <p className="text-xs text-slate-500">US Stocks & Crypto · Swing Trade Analysis</p>
             </div>
           </div>
-          <div className="flex bg-slate-800 rounded-lg p-1 gap-1">
+          <div className="flex glass backdrop-blur-lg rounded-xl p-1 gap-1">
             <button
               onClick={() => setActiveTab("overview")}
-              className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${activeTab === "overview" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}
-            >🌐 ภาพรวมตลาด</button>
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === "overview" ? "glass-accent text-white" : "text-slate-400 hover:text-white"}`}
+            >🌐<span className="hidden sm:inline"> ภาพรวมตลาด</span></button>
             <button
               onClick={() => setActiveTab("detail")}
-              className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${activeTab === "detail" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}
-            >🔍 วิเคราะห์รายตัว</button>
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === "detail" ? "glass-accent text-white" : "text-slate-400 hover:text-white"}`}
+            >🔍<span className="hidden sm:inline"> วิเคราะห์รายตัว</span></button>
+            <button
+              onClick={() => setActiveTab("portfolio")}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === "portfolio" ? "glass-accent text-white" : "text-slate-400 hover:text-white"}`}
+            >💼<span className="hidden sm:inline"> พอร์ตของฉัน</span>{holdings.length > 0 && <span className="ml-1.5 rounded-full bg-white/15 px-1.5 text-[10px]">{holdings.length}</span>}</button>
           </div>
         </div>
+        {(() => {
+          const quotes = [...(overviewData?.stocks ?? []), ...(overviewData?.cryptos ?? [])];
+          if (!quotes.length) return null;
+          const row = (k: string) => quotes.map((q) => {
+            const sym = q.ticker.replace(/-USD$/, "");
+            const crypto = q.ticker.endsWith("-USD");
+            return (
+              <button key={k + q.ticker} onClick={() => { setQuery(sym); setIsCrypto(crypto); setActiveTab("detail"); search(sym, crypto); }} className="flex shrink-0 items-center gap-2 px-4 text-xs hover:text-white transition">
+                <span className="font-semibold text-slate-200">{sym}</span>
+                <Sparkline values={q.spark?.slice(-15)} className="h-4 w-12" />
+                <span className="font-mono text-slate-300">${q.price < 10 ? q.price.toFixed(3) : q.price.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                <span className={`font-mono ${q.changePct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{q.changePct >= 0 ? "▲" : "▼"}{Math.abs(q.changePct).toFixed(2)}%</span>
+              </button>
+            );
+          });
+          return (
+            <div className="ticker ticker-mask -mx-6 mt-3 -mb-4 overflow-hidden border-t border-white/5 py-2">
+              <div className="ticker-track flex w-max" style={{ animationDuration: `${quotes.length * 5}s` }}>{row("a")}{row("b")}</div>
+            </div>
+          );
+        })()}
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+      <main className="route-reveal max-w-7xl mx-auto px-4 py-6 space-y-6">
 
         {/* ===== MARKET OVERVIEW TAB ===== */}
         {activeTab === "overview" && (
           <div className="space-y-6">
-            <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="card spotlight p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>
                 <h2 className="text-lg font-bold text-white mb-1">วิเคราะห์ภาพรวมตลาด</h2>
                 <p className="text-xs text-slate-500">AI วิเคราะห์ตลาดโดยรวม + ตัวที่น่าสนใจ + Favorites ของคุณ</p>
+                {overviewData?.createdAt && (
+                  <p className="text-xs text-violet-300/80 mt-1.5 flex items-center gap-1.5">
+                    <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-violet-400 opacity-60" /><span className="relative inline-flex h-2 w-2 rounded-full bg-violet-400" /></span>
+                    วิเคราะห์ล่าสุด {formatTimeAgo(new Date(overviewData.createdAt))} · {formatThaiDate(overviewData.createdAt)}
+                  </p>
+                )}
               </div>
               <button
                 onClick={() => loadOverview(favorites)}
                 disabled={overviewLoading}
-                className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg text-sm font-medium transition flex items-center gap-2"
+                className="px-6 py-2.5 glass-accent hover:brightness-110 rounded-xl disabled:opacity-50 rounded-lg text-sm font-medium transition flex items-center gap-2"
               >
-                {overviewLoading ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />กำลังวิเคราะห์...</> : "🔍 วิเคราะห์ตอนนี้"}
+                {overviewLoading ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />กำลังวิเคราะห์...</> : overviewData ? "🔄 วิเคราะห์ใหม่" : "🔍 วิเคราะห์ตอนนี้"}
               </button>
             </div>
 
@@ -318,22 +586,24 @@ export default function Home() {
 
             {overviewLoading && !overviewData && (
               <div className="text-center py-16 text-slate-500">
-                <div className="w-10 h-10 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+                <div className="assistant-orb relative mx-auto mb-5 h-14 w-14 rounded-full"><span className="assistant-orb-ring" /></div>
                 <p>กำลังดึงข้อมูลตลาดและวิเคราะห์ด้วย AI...</p>
                 <p className="text-xs mt-2">อาจใช้เวลา 10-20 วินาที</p>
               </div>
             )}
 
             {overviewData && (
-              <>
+              <div className={`space-y-6 transition-opacity ${overviewLoading ? "opacity-50 pointer-events-none" : ""}`}>
                 {/* Market Mood */}
-                <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+                <div className="card spotlight glow-ring p-5 rounded-2xl relative overflow-hidden">
+                  <span className="glow-ring-edge" />
+                  {overviewLoading && <div className="assistant-scan" />}
                   <div className="flex flex-wrap items-center gap-3 mb-3">
                     <h3 className="font-semibold text-white">สถานการณ์ตลาดโดยรวม</h3>
                     <span className={`text-sm font-bold ${moodColor[overviewData.marketMood]}`}>{moodLabel[overviewData.marketMood]}</span>
                     {overviewData.fearGreed && (() => {
                       const s = overviewData.fearGreed!.score;
-                      const c = s >= 75 ? "text-green-300 border-green-700 bg-green-900/30" : s >= 56 ? "text-emerald-300 border-emerald-700 bg-emerald-900/30" : s >= 45 ? "text-slate-300 border-slate-600 bg-slate-800/50" : s >= 25 ? "text-orange-300 border-orange-700 bg-orange-900/30" : "text-red-300 border-red-700 bg-red-900/30";
+                      const c = s >= 75 ? "text-green-300 border-green-700 bg-green-900/30" : s >= 56 ? "text-emerald-300 border-emerald-700 bg-emerald-900/30" : s >= 45 ? "text-slate-300 border-slate-600 bg-white/[0.04]" : s >= 25 ? "text-orange-300 border-orange-700 bg-orange-900/30" : "text-red-300 border-red-700 bg-red-900/30";
                       return <span className={`text-xs px-2.5 py-1 rounded-full border font-medium ${c}`}>Fear&Greed: {s}/100 · {overviewData.fearGreed!.rating}</span>;
                     })()}
                   </div>
@@ -348,32 +618,53 @@ export default function Home() {
                       <p className="text-sm text-red-300">{overviewData.topRisk}</p>
                     </div>
                   </div>
+                  {(overviewData.changesSinceLast || overviewData.actionPlan?.length) && (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-3">
+                      {overviewData.changesSinceLast && (
+                        <div className="rounded-xl border border-violet-400/25 bg-violet-500/10 p-3">
+                          <p className="text-xs text-violet-300 mb-1">🔁 เปลี่ยนไปจากรอบก่อน</p>
+                          <p className="text-sm text-slate-200">{overviewData.changesSinceLast}</p>
+                        </div>
+                      )}
+                      {overviewData.actionPlan?.length ? (
+                        <div className="rounded-xl border border-sky-400/25 bg-sky-500/10 p-3">
+                          <p className="text-xs text-sky-300 mb-1.5">🎯 แผนวันนี้</p>
+                          <ol className="space-y-1">
+                            {overviewData.actionPlan.map((a, i) => (
+                              <li key={i} className="text-sm text-slate-200 flex gap-2"><span className="font-mono text-sky-300">{i + 1}.</span>{a}</li>
+                            ))}
+                          </ol>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
 
                 {/* Stock Picks */}
                 {overviewData.stockPicks?.length > 0 && (
-                  <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+                  <div className="card spotlight p-5">
                     <h3 className="font-semibold text-white mb-4">🏢 หุ้น US ที่น่าสนใจ</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                       {overviewData.stockPicks.map((pick) => (
                         <button
                           key={pick.symbol}
                           onClick={() => { const sym = pick.symbol.replace(/-USD$/, ""); setQuery(sym); setIsCrypto(false); setActiveTab("detail"); search(sym, false); }}
-                          className="text-left bg-slate-800/60 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 rounded-xl p-4 transition group"
+                          className="text-left glass spotlight holo rounded-2xl p-4 transition group overflow-hidden"
                         >
                           <div className="flex items-start justify-between mb-2">
                             <div>
-                              <span className="font-bold text-white group-hover:text-blue-300 transition">{pick.symbol}</span>
+                              <span className="font-bold text-white group-hover:text-violet-300 transition">{pick.symbol}</span>
                               <span className="text-xs text-slate-500 ml-2 block">{pick.name}</span>
                             </div>
                             <span className={`text-xs px-2 py-0.5 rounded-full ${suggestionBadge[pick.suggestion]}`}>{pick.suggestion === "Buy" ? "ซื้อได้" : pick.suggestion === "Wait" ? "รอจังหวะ" : "หลีกเลี่ยง"}</span>
                           </div>
+                          <Sparkline values={[...(overviewData.stocks ?? []), ...(overviewData.cryptos ?? [])].find((q) => q.ticker.replace(/-USD$/, "") === pick.symbol.replace(/-USD$/, ""))?.spark} className="h-10 w-full mb-2" />
                           <p className="text-xs text-slate-400 leading-relaxed mb-2">{pick.reason}</p>
                           <div className="flex justify-between text-xs">
-                            <span className={pick.changePct >= 0 ? "text-green-400" : "text-red-400"}>{pick.changePct >= 0 ? "+" : ""}{pick.changePct?.toFixed(2)}%</span>
+                            <span className={pick.changePct >= 0 ? "text-green-400" : "text-red-400"}>{pick.changePct >= 0 ? "+" : ""}{fmt(pick.changePct)}%</span>
                             <span className="text-slate-500">Score: <span className="text-white">{pick.score}/10</span></span>
                           </div>
-                          {pick.entry && <p className="text-xs text-slate-500 mt-1">เข้าได้ที่ <span className="text-blue-400">${pick.entry?.toFixed(2)}</span></p>}
+                          {pick.entry && <p className="text-xs text-slate-500 mt-1">เข้าได้ที่ <span className="text-violet-300">${fmt(pick.entry)}</span></p>}
                         </button>
                       ))}
                     </div>
@@ -382,14 +673,14 @@ export default function Home() {
 
                 {/* Crypto Picks */}
                 {overviewData.cryptoPicks?.length > 0 && (
-                  <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+                  <div className="card spotlight p-5">
                     <h3 className="font-semibold text-white mb-4">🪙 Crypto ที่น่าสนใจ</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                       {overviewData.cryptoPicks.map((pick) => (
                         <button
                           key={pick.symbol}
                           onClick={() => { const sym = pick.symbol.replace(/-USD$/, ""); setQuery(sym); setIsCrypto(true); setActiveTab("detail"); search(sym, true); }}
-                          className="text-left bg-slate-800/60 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 rounded-xl p-4 transition group"
+                          className="text-left glass spotlight holo rounded-2xl p-4 transition group overflow-hidden"
                         >
                           <div className="flex items-start justify-between mb-2">
                             <div>
@@ -398,12 +689,13 @@ export default function Home() {
                             </div>
                             <span className={`text-xs px-2 py-0.5 rounded-full ${suggestionBadge[pick.suggestion]}`}>{pick.suggestion === "Buy" ? "ซื้อได้" : pick.suggestion === "Wait" ? "รอจังหวะ" : "หลีกเลี่ยง"}</span>
                           </div>
+                          <Sparkline values={[...(overviewData.stocks ?? []), ...(overviewData.cryptos ?? [])].find((q) => q.ticker.replace(/-USD$/, "") === pick.symbol.replace(/-USD$/, ""))?.spark} className="h-10 w-full mb-2" />
                           <p className="text-xs text-slate-400 leading-relaxed mb-2">{pick.reason}</p>
                           <div className="flex justify-between text-xs">
-                            <span className={pick.changePct >= 0 ? "text-green-400" : "text-red-400"}>{pick.changePct >= 0 ? "+" : ""}{pick.changePct?.toFixed(2)}%</span>
+                            <span className={pick.changePct >= 0 ? "text-green-400" : "text-red-400"}>{pick.changePct >= 0 ? "+" : ""}{fmt(pick.changePct)}%</span>
                             <span className="text-slate-500">Score: <span className="text-white">{pick.score}/10</span></span>
                           </div>
-                          {pick.entry && <p className="text-xs text-slate-500 mt-1">เข้าได้ที่ <span className="text-orange-400">${pick.entry?.toFixed(2)}</span></p>}
+                          {pick.entry && <p className="text-xs text-slate-500 mt-1">เข้าได้ที่ <span className="text-orange-400">${fmt(pick.entry)}</span></p>}
                         </button>
                       ))}
                     </div>
@@ -412,7 +704,7 @@ export default function Home() {
 
                 {/* Favorites Analysis */}
                 {overviewData.favoritesAnalysis?.length > 0 && (
-                  <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+                  <div className="card spotlight p-5">
                     <h3 className="font-semibold text-white mb-4">⭐ สถานการณ์ Favorites ของคุณ</h3>
                     <div className="space-y-3">
                       {overviewData.favoritesAnalysis.map((fav) => {
@@ -421,7 +713,7 @@ export default function Home() {
                           <button
                             key={fav.symbol}
                             onClick={() => { const sym = fav.symbol.replace(/-USD$/, ""); setQuery(sym); setIsCrypto(favInfo?.crypto ?? false); setActiveTab("detail"); search(sym, favInfo?.crypto ?? false); }}
-                            className="w-full text-left bg-slate-800/50 hover:bg-slate-800 border border-slate-700 rounded-xl p-4 transition"
+                            className="w-full text-left glass spotlight rounded-2xl p-4 transition"
                           >
                             <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-2">
@@ -443,11 +735,11 @@ export default function Home() {
                 )}
 
                 {overviewData.favoritesAnalysis?.length === 0 && (
-                  <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 text-center text-slate-500 text-sm">
+                  <div className="card spotlight p-5 text-center text-slate-500 text-sm">
                     <p>ยังไม่มี Favorites — ไปที่ "วิเคราะห์รายตัว" แล้วกด ☆ เพื่อเพิ่ม</p>
                   </div>
                 )}
-              </>
+              </div>
             )}
 
             {!overviewData && !overviewLoading && (
@@ -460,19 +752,148 @@ export default function Home() {
           </div>
         )}
 
+        {/* ===== PORTFOLIO TAB ===== */}
+        {activeTab === "portfolio" && (() => {
+          const rows = holdings.map((h) => {
+            const q = posQuotes[h.symbol];
+            const price = q?.price ?? null;
+            const value = price != null ? price * h.qty : null;
+            const pnl = value != null ? value - h.cost : null;
+            const pnlPct = pnl != null ? (pnl / h.cost) * 100 : null;
+            const dayPnl = price != null && q ? h.qty * price * (q.changePct / (100 + q.changePct)) : null;
+            return { h, q, price, value, pnl, pnlPct, dayPnl };
+          }).sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
+          const totalCost = rows.reduce((a, r) => a + r.h.cost, 0);
+          const totalValue = rows.reduce((a, r) => a + (r.value ?? r.h.cost), 0);
+          const totalPnl = totalValue - totalCost;
+          const totalPct = totalCost ? (totalPnl / totalCost) * 100 : 0;
+          const dayPnl = rows.reduce((a, r) => a + (r.dayPnl ?? 0), 0);
+          const up = totalPnl >= 0;
+          return (
+            <div className="space-y-6">
+              {/* Portfolio hero */}
+              <div className="card spotlight glow-ring relative overflow-hidden rounded-2xl p-6">
+                <span className="glow-ring-edge" />
+                <div className="page-header-grid pointer-events-none absolute inset-y-0 right-0 w-1/2" />
+                <p className="text-xs uppercase tracking-widest text-slate-400">มูลค่าพอร์ตรวม</p>
+                <div className="mt-1 flex flex-wrap items-end gap-x-6 gap-y-2">
+                  <span className="font-mono text-4xl sm:text-5xl font-bold bg-gradient-to-r from-white via-violet-100 to-violet-300 bg-clip-text text-transparent">{money(totalValue)}</span>
+                  <span className={`font-mono text-lg font-semibold ${up ? "text-emerald-300" : "text-rose-300"}`}>{up ? "▲" : "▼"} {money(totalPnl)} ({totalPct >= 0 ? "+" : ""}{totalPct.toFixed(2)}%)</span>
+                </div>
+                <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                  <div className="glass rounded-xl p-3"><p className="text-xs text-slate-400">ต้นทุนรวม</p><p className="font-mono text-white">{money(totalCost)}</p></div>
+                  <div className="glass rounded-xl p-3"><p className="text-xs text-slate-400">วันนี้</p><p className={`font-mono ${dayPnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{dayPnl >= 0 ? "+" : ""}{money(dayPnl)}</p></div>
+                  <div className="glass rounded-xl p-3"><p className="text-xs text-slate-400">ถืออยู่</p><p className="font-mono text-white">{holdings.length} ตัว</p></div>
+                  <div className="glass rounded-xl p-3"><p className="text-xs text-slate-400">กำไร / ขาดทุน</p><p className="font-mono text-white"><span className="text-emerald-300">{rows.filter((r) => (r.pnl ?? 0) > 0).length}</span> / <span className="text-rose-300">{rows.filter((r) => (r.pnl ?? 0) < 0).length}</span></p></div>
+                </div>
+                {totalValue > 0 && (
+                  <div className="mt-5">
+                    <p className="mb-2 text-xs text-slate-400">สัดส่วนพอร์ต</p>
+                    <div className="flex h-2.5 overflow-hidden rounded-full bg-white/5">
+                      {rows.map((r, i) => (
+                        <div key={r.h.symbol} title={r.h.symbol} className="grow-x h-full" style={{ width: `${((r.value ?? r.h.cost) / totalValue) * 100}%`, background: `hsl(${265 - i * 38} 80% ${68 - (i % 2) * 10}%)`, animationDelay: `${i * 80}ms` }} />
+                      ))}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
+                      {rows.map((r, i) => (
+                        <span key={r.h.symbol} className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: `hsl(${265 - i * 38} 80% ${68 - (i % 2) * 10}%)` }} />{r.h.symbol.replace(/-USD$/, "")} {(((r.value ?? r.h.cost) / totalValue) * 100).toFixed(1)}%</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Add position */}
+              <form onSubmit={addPosition} className="card spotlight p-5">
+                <h3 className="mb-4 font-semibold text-white">➕ บันทึกการซื้อ</h3>
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
+                  <div className="col-span-2 lg:col-span-1 flex glass rounded-xl p-1 gap-1 h-fit">
+                    <button type="button" onClick={() => setPosForm((f) => ({ ...f, crypto: false }))} className={`flex-1 px-3 py-1.5 rounded-lg text-sm transition ${!posForm.crypto ? "glass-accent text-white" : "text-slate-400"}`}>หุ้น US</button>
+                    <button type="button" onClick={() => setPosForm((f) => ({ ...f, crypto: true }))} className={`flex-1 px-3 py-1.5 rounded-lg text-sm transition ${posForm.crypto ? "bg-gradient-to-br from-amber-400 to-orange-600 text-white" : "text-slate-400"}`}>Crypto</button>
+                  </div>
+                  <label className="text-xs text-slate-400">ชื่อ<input value={posForm.symbol} onChange={(e) => setPosForm((f) => ({ ...f, symbol: e.target.value.toUpperCase() }))} placeholder={posForm.crypto ? "BTC" : "NVDA"} className="mt-1 w-full glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
+                  <label className="text-xs text-slate-400">ราคาที่ซื้อ ($)<input type="number" step="any" min="0" value={posForm.price} onChange={(e) => setPosForm((f) => ({ ...f, price: e.target.value }))} placeholder="0.00" className="mt-1 w-full glass rounded-xl px-3 py-2 font-mono text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
+                  <label className="text-xs text-slate-400">จำนวน<input type="number" step="any" min="0" value={posForm.qty} onChange={(e) => setPosForm((f) => ({ ...f, qty: e.target.value }))} placeholder="0" className="mt-1 w-full glass rounded-xl px-3 py-2 font-mono text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
+                  <label className="text-xs text-slate-400">วันที่ซื้อ<input type="date" value={posForm.boughtAt} onChange={(e) => setPosForm((f) => ({ ...f, boughtAt: e.target.value }))} className="mt-1 w-full glass rounded-xl px-3 py-2 text-sm text-white [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
+                  <button type="submit" className="col-span-2 lg:col-span-1 glass-accent rounded-xl px-5 py-2 text-sm font-medium hover:brightness-110 transition">บันทึก</button>
+                </div>
+                {posForm.price && posForm.qty && Number(posForm.price) * Number(posForm.qty) > 0 && (
+                  <p className="mt-3 text-xs text-slate-400">มูลค่ารายการนี้ <span className="font-mono text-violet-200">{money(Number(posForm.price) * Number(posForm.qty))}</span></p>
+                )}
+                {posError && <p className="mt-3 text-sm text-rose-300">{posError}</p>}
+              </form>
+
+              {/* Holdings */}
+              {rows.length === 0 ? (
+                <div className="card p-10 text-center text-slate-400">
+                  <div className="text-4xl mb-3">💼</div>
+                  <p>ยังไม่มีรายการ บันทึกการซื้อด้านบนเพื่อเริ่มติดตามพอร์ต</p>
+                  <p className="mt-1 text-xs text-slate-500">ซื้อตัวเดิมหลายครั้งได้ ระบบจะคิดต้นทุนเฉลี่ยให้</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  {rows.map(({ h, q, price, value, pnl, pnlPct }) => {
+                    const good = (pnl ?? 0) >= 0;
+                    return (
+                      <div key={h.symbol} className="card spotlight holo relative overflow-hidden rounded-2xl p-5">
+                        <span className="holo-sheen" />
+                        <div className="flex items-start justify-between gap-3">
+                          <button onClick={() => openSymbol(h.symbol, h.crypto)} className="text-left group">
+                            <p className="text-xl font-bold text-white group-hover:text-violet-300 transition">{h.symbol.replace(/-USD$/, "")} <span className="text-xs font-normal text-slate-500">{q?.name ?? h.name ?? ""}</span></p>
+                            <p className="font-mono text-sm text-slate-400">{h.qty.toLocaleString(undefined, { maximumFractionDigits: 6 })} หน่วย · ต้นทุนเฉลี่ย {money(h.avgCost)}</p>
+                          </button>
+                          <div className="text-right">
+                            <p className="font-mono text-lg text-white">{value != null ? money(value) : "…"}</p>
+                            {pnl != null && <p className={`font-mono text-sm ${good ? "text-emerald-300" : "text-rose-300"}`}>{good ? "+" : ""}{money(pnl)} ({pnlPct! >= 0 ? "+" : ""}{pnlPct!.toFixed(2)}%)</p>}
+                          </div>
+                        </div>
+                        <div className="relative mt-3">
+                          <Sparkline values={q?.spark} className="h-14 w-full" />
+                          {q?.spark && (() => {
+                            const min = Math.min(...q.spark), max = Math.max(...q.spark);
+                            if (h.avgCost < min || h.avgCost > max) return null;
+                            const y = 100 - ((h.avgCost - min) / (max - min || 1)) * 93 - 3;
+                            return <div className="absolute inset-x-0 border-t border-dashed border-amber-300/70" style={{ top: `${y}%` }}><span className="absolute -top-4 right-0 text-[10px] text-amber-200">ต้นทุน</span></div>;
+                          })()}
+                        </div>
+                        <div className="mt-3 flex items-center justify-between text-xs">
+                          <span className="text-slate-400">ราคาตอนนี้ <span className="font-mono text-slate-200">{price != null ? money(price) : "…"}</span>{q && <span className={q.changePct >= 0 ? "text-emerald-300" : "text-rose-300"}> {q.changePct >= 0 ? "▲" : "▼"}{Math.abs(q.changePct).toFixed(2)}%</span>}</span>
+                          <button onClick={() => openSymbol(h.symbol, h.crypto)} className="glass rounded-full px-3 py-1 text-violet-200 hover:bg-violet-500/20 transition">🔮 วิเคราะห์แนวโน้ม</button>
+                        </div>
+                        <details className="mt-3 text-xs">
+                          <summary className="cursor-pointer text-slate-500 hover:text-slate-300">รายการซื้อ {h.lots.length} ครั้ง</summary>
+                          <div className="mt-2 space-y-1">
+                            {h.lots.map((l) => (
+                              <div key={l.id} className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-1.5">
+                                <span className="text-slate-400">{new Date(l.bought_at + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })}</span>
+                                <span className="font-mono text-slate-300">{l.qty} × {money(l.price)}</span>
+                                <button onClick={() => deletePosition(l.id)} title="ลบรายการนี้" className="text-slate-600 hover:text-rose-400 transition">✕</button>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* ===== DETAIL TAB ===== */}
         {activeTab === "detail" && (
           <div className="space-y-6">
         {/* Search */}
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+        <div className="card spotlight p-5">
           <div className="flex gap-3 mb-4">
-            <div className="flex bg-slate-800 rounded-lg p-1 gap-1">
-              <button onClick={() => setIsCrypto(false)} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${!isCrypto ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}>US Stocks</button>
-              <button onClick={() => setIsCrypto(true)} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${isCrypto ? "bg-orange-500 text-white" : "text-slate-400 hover:text-white"}`}>Crypto</button>
+            <div className="flex glass backdrop-blur-lg rounded-xl p-1 gap-1">
+              <button onClick={() => setIsCrypto(false)} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${!isCrypto ? "glass-accent text-white" : "text-slate-400 hover:text-white"}`}>US Stocks</button>
+              <button onClick={() => setIsCrypto(true)} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${isCrypto ? "bg-gradient-to-br from-amber-400 to-orange-600 text-white shadow-lg shadow-orange-500/30" : "text-slate-400 hover:text-white"}`}>Crypto</button>
             </div>
             <form onSubmit={(e) => { e.preventDefault(); if (query.trim()) search(query.trim(), isCrypto); }} className="flex flex-1 gap-2">
-              <input value={query} onChange={(e) => setQuery(e.target.value.toUpperCase())} placeholder={isCrypto ? "เช่น BTC, ETH, SOL..." : "เช่น AAPL, NVDA, TSLA..."} className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500" />
-              <button type="submit" disabled={loading} className="px-5 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium disabled:opacity-50 transition">{loading ? "กำลังโหลด..." : "วิเคราะห์"}</button>
+              <input value={query} onChange={(e) => setQuery(e.target.value.toUpperCase())} placeholder={isCrypto ? "เช่น BTC, ETH, SOL..." : "เช่น AAPL, NVDA, TSLA..."} className="flex-1 glass rounded-xl px-4 py-2 text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500/60" />
+              <button type="submit" disabled={loading} className="px-5 py-2 glass-accent hover:brightness-110 rounded-xl text-sm font-medium disabled:opacity-50 transition">{loading ? "กำลังโหลด..." : "วิเคราะห์"}</button>
             </form>
           </div>
           {favorites.length > 0 && (
@@ -500,7 +921,7 @@ export default function Home() {
           <div className="flex flex-wrap gap-2">
             <p className="w-full text-xs text-slate-500 mb-1">ยอดนิยม</p>
             {POPULAR.map((p) => (
-              <button key={p.symbol} onClick={() => { setQuery(p.symbol); setIsCrypto(p.crypto); search(p.symbol, p.crypto); }} className="px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-full text-xs transition">{p.label}</button>
+              <button key={p.symbol} onClick={() => { setQuery(p.symbol); setIsCrypto(p.crypto); search(p.symbol, p.crypto); }} className="px-3 py-1 glass hover:bg-violet-500/20 hover:border-violet-400/40 rounded-full text-xs transition">{p.label}</button>
             ))}
           </div>
         </div>
@@ -510,7 +931,8 @@ export default function Home() {
         {data && (
           <>
             {/* Quote Header */}
-            <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+            <div className="card spotlight glow-ring p-5 rounded-2xl">
+              <span className="glow-ring-edge" />
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-3 mb-1">
@@ -531,7 +953,7 @@ export default function Home() {
                     </span>
                     {data.fearGreed && (() => {
                       const s = data.fearGreed!.score;
-                      const color = s >= 75 ? "text-green-300 border-green-700 bg-green-900/30" : s >= 56 ? "text-emerald-300 border-emerald-700 bg-emerald-900/30" : s >= 45 ? "text-slate-300 border-slate-600 bg-slate-800/50" : s >= 25 ? "text-orange-300 border-orange-700 bg-orange-900/30" : "text-red-300 border-red-700 bg-red-900/30";
+                      const color = s >= 75 ? "text-green-300 border-green-700 bg-green-900/30" : s >= 56 ? "text-emerald-300 border-emerald-700 bg-emerald-900/30" : s >= 45 ? "text-slate-300 border-slate-600 bg-white/[0.04]" : s >= 25 ? "text-orange-300 border-orange-700 bg-orange-900/30" : "text-red-300 border-red-700 bg-red-900/30";
                       return <span className={`text-xs px-2.5 py-1 rounded-full border font-medium ${color}`}>😱 Fear&Greed: {s}/100</span>;
                     })()}
                   </div>
@@ -543,19 +965,146 @@ export default function Home() {
                   <div className="text-slate-400">52W L <span className="text-red-400 ml-2">${data.low52w?.toFixed(2)}</span></div>
                 </div>
               </div>
+              {data.indicators?.confluence && (() => {
+                const c = data.indicators.confluence;
+                const pct = ((c.score + 7) / 14) * 100;
+                const label: Record<string, string> = { strong_buy: "แรงซื้อชัดเจน", buy: "เอียงซื้อ", neutral: "เป็นกลาง", sell: "เอียงขาย", strong_sell: "แรงขายชัดเจน" };
+                const tone = c.score >= 2 ? "text-emerald-300" : c.score <= -2 ? "text-rose-300" : "text-violet-200";
+                return (
+                  <div className="mt-5 pt-5 border-t border-white/5 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] items-center">
+                    <div>
+                      <div className="flex items-baseline justify-between mb-2">
+                        <span className="text-xs uppercase tracking-widest text-slate-400">Confluence Score</span>
+                        <span className={`font-mono text-2xl font-bold ${tone}`}>{c.score > 0 ? "+" : ""}{c.score}<span className="text-sm text-slate-500">/7</span> <span className="text-sm font-sans">{label[c.signal]}</span></span>
+                      </div>
+                      <div className="relative h-2.5 rounded-full bg-gradient-to-r from-rose-500/70 via-violet-500/40 to-emerald-400/80">
+                        <div className="absolute top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_16px_rgba(196,181,253,0.9)] ring-4 ring-violet-500/40 transition-all duration-700" style={{ left: `${pct}%` }} />
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {c.details.map((d, i) => (
+                          <span key={i} className={`text-[11px] px-2 py-0.5 rounded-full border ${d.includes("+1") ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-rose-400/30 bg-rose-400/10 text-rose-200"}`}>{d}</span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex sm:flex-col gap-2 text-xs">
+                      {data.indicators.weekly && <span className="glass rounded-lg px-3 py-1.5">Weekly <b className={data.indicators.weekly.trend === "bullish" ? "text-emerald-300" : "text-rose-300"}>{data.indicators.weekly.trend === "bullish" ? "▲ ขาขึ้น" : "▼ ขาลง"}</b></span>}
+                      {data.indicators.adx != null && <span className="glass rounded-lg px-3 py-1.5">ADX <b className="text-violet-200">{data.indicators.adx}</b> <span className="text-slate-400">({data.indicators.trendStrength})</span></span>}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
+            {/* Market context chips */}
+            {(data.market || data.earnings || data.beta != null) && (
+              <div className="flex flex-wrap gap-2 text-xs">
+                {data.market && (
+                  <span className={`rounded-full border px-3 py-1.5 ${data.market.regime === "risk_on" ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : data.market.regime === "risk_off" ? "border-rose-400/30 bg-rose-400/10 text-rose-200" : "border-white/10 bg-white/5 text-slate-300"}`}>
+                    ตลาดรวม: {data.market.regime === "risk_on" ? "🟢 Risk-on" : data.market.regime === "risk_off" ? "🔴 Risk-off" : "⚪ กลางๆ"}
+                  </span>
+                )}
+                {data.market?.spy && <span className="glass rounded-full px-3 py-1.5">S&P 500 <b className={data.market.spy.changePct >= 0 ? "text-emerald-300" : "text-rose-300"}>{data.market.spy.changePct >= 0 ? "+" : ""}{data.market.spy.changePct}%</b> <span className="text-slate-500">· 20d {data.market.spy.perf20d}%</span></span>}
+                {data.market?.qqq && <span className="glass rounded-full px-3 py-1.5">Nasdaq <b className={data.market.qqq.changePct >= 0 ? "text-emerald-300" : "text-rose-300"}>{data.market.qqq.changePct >= 0 ? "+" : ""}{data.market.qqq.changePct}%</b></span>}
+                {data.market?.vix != null && <span className={`glass rounded-full px-3 py-1.5 ${data.market.vix > 25 ? "text-rose-200" : ""}`}>VIX <b>{data.market.vix}</b></span>}
+                {data.beta != null && <span className="glass rounded-full px-3 py-1.5">Beta <b className="text-violet-200">{data.beta}</b> <span className="text-slate-500">{data.beta > 1.3 ? "แกว่งแรงกว่าตลาด" : data.beta < 0.7 ? "แกว่งน้อยกว่าตลาด" : "ใกล้ตลาด"}</span></span>}
+                {data.earnings && (
+                  <span className={`rounded-full border px-3 py-1.5 ${data.earnings.daysUntil <= 14 ? "border-amber-400/40 bg-amber-400/15 text-amber-200 animate-pulse" : "border-white/10 bg-white/5 text-slate-300"}`}>
+                    📅 ประกาศงบ {new Date(data.earnings.date + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short" })} (อีก {data.earnings.daysUntil} วัน)
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* My position */}
+            {(() => {
+              const h = holdings.find((x) => x.symbol === data.symbol);
+              if (!h) return null;
+              const value = data.price * h.qty;
+              const pnl = value - h.cost;
+              const pct = (pnl / h.cost) * 100;
+              const good = pnl >= 0;
+              const pAbove = probAbove(data.projection?.points, h.avgCost);
+              const adv = analysis?.positionAdvice;
+              const advTone = adv?.action === "CutLoss" ? "from-rose-500/30 to-rose-500/5 border-rose-400/40 text-rose-100" : adv?.action === "TakeProfit" ? "from-amber-400/30 to-amber-400/5 border-amber-300/40 text-amber-100" : adv?.action === "AddMore" ? "from-sky-400/30 to-sky-400/5 border-sky-300/40 text-sky-100" : "from-emerald-400/30 to-emerald-400/5 border-emerald-300/40 text-emerald-100";
+              return (
+                <div className="card spotlight relative overflow-hidden rounded-2xl p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="font-semibold text-white">💼 พอร์ตของคุณ</h3>
+                    <span className="text-xs text-slate-500">ซื้อ {h.lots.length} ครั้ง · ครั้งแรก {new Date(h.firstBought + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })}</span>
+                  </div>
+                  <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <div><p className="text-xs text-slate-400">ต้นทุนเฉลี่ย</p><p className="font-mono text-lg text-amber-200">{money(h.avgCost)}</p></div>
+                    <div><p className="text-xs text-slate-400">จำนวน</p><p className="font-mono text-lg text-white">{h.qty.toLocaleString(undefined, { maximumFractionDigits: 6 })}</p></div>
+                    <div><p className="text-xs text-slate-400">มูลค่าตอนนี้</p><p className="font-mono text-lg text-white">{money(value)}</p></div>
+                    <div><p className="text-xs text-slate-400">กำไร/ขาดทุน</p><p className={`font-mono text-lg font-semibold ${good ? "text-emerald-300" : "text-rose-300"}`}>{good ? "+" : ""}{money(pnl)} <span className="text-sm">({pct >= 0 ? "+" : ""}{pct.toFixed(2)}%)</span></p></div>
+                  </div>
+                  {pAbove != null && (
+                    <div className="mt-4">
+                      <div className="mb-1.5 flex justify-between text-xs">
+                        <span className="text-slate-400">โอกาสที่ราคาจะอยู่เหนือต้นทุนใน {data.projection!.horizon} วันทำการ (ตามสถิติ)</span>
+                        <span className={`font-mono font-semibold ${pAbove >= 0.5 ? "text-emerald-300" : "text-rose-300"}`}>{(pAbove * 100).toFixed(0)}%</span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                        <div className="grow-x h-full rounded-full bg-gradient-to-r from-rose-400 via-violet-400 to-emerald-300" style={{ width: `${pAbove * 100}%` }} />
+                      </div>
+                    </div>
+                  )}
+                  {adv ? (
+                    <div className={`mt-4 rounded-xl border bg-gradient-to-br p-4 ${advTone}`}>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-lg font-bold">🤖 {adv.actionTH}</p>
+                        <div className="flex gap-2 text-xs font-mono">
+                          {adv.targetForPosition != null && <span className="rounded-full bg-black/20 px-2.5 py-1">เป้าขาย {money(adv.targetForPosition)}</span>}
+                          {adv.stopForPosition != null && <span className="rounded-full bg-black/20 px-2.5 py-1">Stop {money(adv.stopForPosition)}</span>}
+                        </div>
+                      </div>
+                      <p className="mt-2 text-sm leading-relaxed opacity-90">{adv.reason}</p>
+                    </div>
+                  ) : !analyzing && (
+                    <button onClick={() => analyze(data, news)} className="mt-4 w-full rounded-xl border border-dashed border-violet-400/40 py-3 text-sm text-violet-200 hover:bg-violet-500/10 transition">
+                      🤖 กดวิเคราะห์ใหม่ เพื่อรับคำแนะนำ ถือต่อ / ขาย / cut loss สำหรับต้นทุนของคุณ
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Chart */}
-            <div className="bg-slate-900 rounded-xl border border-slate-800 p-4">
-              <h3 className="text-sm font-medium text-slate-400 mb-3">กราฟราคา 90 วัน</h3>
-              <CandleChart candles={data.candles} indicators={data.indicators} />
+            <div className="card spotlight p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-medium text-slate-400">กราฟราคา 180 วัน{data.projection && <span className="text-violet-300"> + กรวยแนวโน้ม {data.projection.horizon} วันทำการ</span>}</h3>
+                <div className="flex flex-wrap gap-3 text-[11px] text-slate-400">
+                  {data.projection && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t-2 border-dashed border-violet-200" />กรณีกลาง</span>}
+                  {data.projection && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t border-violet-400/70" />ช่วง 50%</span>}
+                  {data.projection && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t border-dashed border-violet-400/40" />ช่วง 80%</span>}
+                  {holdings.some((x) => x.symbol === data.symbol) && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t-2 border-amber-300" />ต้นทุน</span>}
+                </div>
+              </div>
+              <CandleChart
+                candles={data.candles}
+                indicators={data.indicators}
+                projection={data.projection?.points}
+                priceLines={(() => {
+                  const lines: PriceLine[] = [];
+                  const h = holdings.find((x) => x.symbol === data.symbol);
+                  if (h) lines.push({ price: h.avgCost, color: "#fcd34d", title: "ต้นทุน" });
+                  const n = (v: unknown) => { const x = Number(v); return Number.isFinite(x) && x > 0 ? x : null; };
+                  const tp1 = n(analysis?.targets?.tp1), tp2 = n(analysis?.targets?.tp2), sl = n((h ? analysis?.positionAdvice?.stopForPosition : null) ?? analysis?.stopLoss);
+                  if (tp1) lines.push({ price: tp1, color: "#6ee7b7", title: "TP1", dashed: true });
+                  if (tp2) lines.push({ price: tp2, color: "#34d399", title: "TP2", dashed: true });
+                  if (sl) lines.push({ price: sl, color: "#f472b6", title: "SL", dashed: true });
+                  return lines;
+                })()}
+              />
+              {data.projection?.earningsInHorizon && <p className="mt-2 text-xs text-amber-200">⚠ มีประกาศงบในช่วงนี้ กรวยจึงกว้างขึ้นหลังวันประกาศ ราคาอาจกระโดดได้แรง</p>}
+              {data.projection && <p className="mt-2 text-[11px] text-slate-500">กรวยคำนวณจากความผันผวนจริง {data.projection.sigmaDaily}%/วัน เอียงตาม Confluence Score และสภาวะตลาด เป็นช่วงความน่าจะเป็นทางสถิติ ไม่ใช่การทำนายราคาแน่นอน</p>}
             </div>
 
             {/* Indicators + Analysis */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {/* Technical Indicators */}
               {data.indicators && (
-                <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 space-y-4">
+                <div className="card spotlight p-5 space-y-4">
                   <h3 className="font-semibold text-white">Technical Indicators</h3>
                   <div>
                     <div className="flex justify-between text-sm mb-1">
@@ -565,8 +1114,8 @@ export default function Home() {
                         <span className="text-slate-500 ml-1 text-xs">{data.indicators.rsi > 70 ? "Overbought" : data.indicators.rsi < 30 ? "Oversold" : "Normal"}</span>
                       </span>
                     </div>
-                    <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full ${data.indicators.rsi > 70 ? "bg-red-500" : data.indicators.rsi < 30 ? "bg-green-500" : "bg-blue-500"}`} style={{ width: `${Math.min(data.indicators.rsi, 100)}%` }} />
+                    <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full ${data.indicators.rsi > 70 ? "bg-red-500" : data.indicators.rsi < 30 ? "bg-green-500" : "bg-gradient-to-r from-violet-500 to-fuchsia-400"}`} style={{ width: `${Math.min(data.indicators.rsi, 100)}%` }} />
                     </div>
                     <div className="flex justify-between text-xs text-slate-600 mt-0.5"><span>0</span><span>30</span><span>70</span><span>100</span></div>
                   </div>
@@ -615,10 +1164,25 @@ export default function Home() {
               )}
 
               {/* AI Analysis */}
-              <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-semibold text-white">AI วิเคราะห์</h3>
-                  <span className="text-xs text-slate-500">by LLaMA 3.3 70B</span>
+              <div className="card spotlight p-5 space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div>
+                    <h3 className="font-semibold text-white">AI วิเคราะห์</h3>
+                    {analysisCachedAt && (
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        🕐 วิเคราะห์เมื่อ {formatTimeAgo(analysisCachedAt)}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500">by GPT-OSS 120B</span>
+                    {data && analysis && !analyzing && (
+                      <button
+                        onClick={() => analyze(data, news)}
+                        className="text-xs px-3 py-1 glass hover:bg-violet-500/20 rounded-full transition"
+                      >🔄 วิเคราะห์ใหม่</button>
+                    )}
+                  </div>
                 </div>
                 {analyzing && (
                   <div className="flex items-center gap-2 text-slate-400 text-sm">
@@ -634,13 +1198,13 @@ export default function Home() {
                       <span className={`font-medium ${trendColor[analysis.trend]}`}>{analysis.trendTH}</span>
                       <span className="ml-auto text-slate-400 text-sm">Score <span className="text-white font-bold">{analysis.score}/10</span></span>
                     </div>
-                    <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
                       <div className="h-full rounded-full bg-gradient-to-r from-red-500 via-yellow-500 to-green-500" style={{ width: `${analysis.score * 10}%` }} />
                     </div>
 
                     {/* TL;DR */}
                     {analysis.tldr && (
-                      <div className="bg-blue-950/50 border border-blue-800/60 rounded-lg p-3">
+                      <div className="bg-violet-500/10 border border-violet-400/30 rounded-lg p-3">
                         <p className="text-xs text-blue-400 font-medium mb-1">⚡ สรุปสั้น</p>
                         <p className="text-sm text-blue-100 leading-relaxed">{analysis.tldr}</p>
                       </div>
@@ -654,7 +1218,7 @@ export default function Home() {
 
                     {/* Technical + Fundamental detail */}
                     {analysis.technicalDetail && (
-                      <div className="bg-slate-800/40 rounded-lg p-3 space-y-2">
+                      <div className="bg-white/[0.04] rounded-lg p-3 space-y-2">
                         <div>
                           <p className="text-xs text-purple-400 font-medium mb-1">📊 Technical Setup</p>
                           <p className="text-xs text-slate-300 leading-relaxed">{analysis.technicalDetail}</p>
@@ -674,11 +1238,11 @@ export default function Home() {
                       <div className="grid grid-cols-2 gap-2 mb-2">
                         <div className="bg-green-900/30 border border-green-800 rounded-lg p-2 text-center">
                           <p className="text-xs text-slate-400 mb-0.5">เข้าครั้งแรก</p>
-                          <p className="text-green-300 font-bold">${analysis.entryStrategy?.first?.toFixed(2)}</p>
+                          <p className="text-green-300 font-bold">${fmt(analysis.entryStrategy?.first)}</p>
                         </div>
                         <div className="bg-green-900/20 border border-green-900 rounded-lg p-2 text-center">
                           <p className="text-xs text-slate-400 mb-0.5">เข้าครั้งสอง</p>
-                          <p className="text-green-400 font-bold">${analysis.entryStrategy?.second?.toFixed(2)}</p>
+                          <p className="text-green-400 font-bold">${fmt(analysis.entryStrategy?.second)}</p>
                         </div>
                       </div>
                       {analysis.entryStrategy?.reason && (
@@ -690,14 +1254,14 @@ export default function Home() {
                     <div>
                       <p className="text-xs text-slate-400 mb-2">เป้าหมายราคา</p>
                       <div className="grid grid-cols-2 gap-2">
-                        <div className="bg-blue-900/30 border border-blue-800 rounded-lg p-2">
+                        <div className="bg-violet-500/15 border border-violet-400/40 rounded-lg p-2">
                           <p className="text-xs text-slate-400 mb-0.5">TP1 (conservative)</p>
-                          <p className="text-blue-300 font-bold">${analysis.targets?.tp1?.toFixed(2)}</p>
+                          <p className="text-blue-300 font-bold">${fmt(analysis.targets?.tp1)}</p>
                           {analysis.targets?.tp1Reason && <p className="text-xs text-slate-500 mt-0.5">{analysis.targets.tp1Reason}</p>}
                         </div>
-                        <div className="bg-blue-900/20 border border-blue-900 rounded-lg p-2">
+                        <div className="bg-violet-500/10 border border-violet-400/20 rounded-lg p-2">
                           <p className="text-xs text-slate-400 mb-0.5">TP2 (optimistic)</p>
-                          <p className="text-blue-200 font-bold">${analysis.targets?.tp2?.toFixed(2) ?? "-"}</p>
+                          <p className="text-blue-200 font-bold">${fmt(analysis.targets?.tp2)}</p>
                           {analysis.targets?.tp2Reason && <p className="text-xs text-slate-500 mt-0.5">{analysis.targets.tp2Reason}</p>}
                         </div>
                       </div>
@@ -707,18 +1271,18 @@ export default function Home() {
                     <div className="bg-red-900/20 border border-red-900 rounded-lg p-3">
                       <div className="flex justify-between items-center mb-1">
                         <p className="text-xs text-slate-400">Cut Loss</p>
-                        <p className="text-red-300 font-bold">${analysis.stopLoss?.toFixed(2)}</p>
+                        <p className="text-red-300 font-bold">${fmt(analysis.stopLoss)}</p>
                       </div>
                       {analysis.stopLossReason && <p className="text-xs text-slate-500">{analysis.stopLossReason}</p>}
                     </div>
 
                     {/* Risk/Reward + Timeframe */}
                     <div className="flex gap-4 text-sm">
-                      <div className="flex-1 bg-slate-800/50 rounded-lg p-2 text-center">
+                      <div className="flex-1 bg-white/[0.04] rounded-lg p-2 text-center">
                         <p className="text-xs text-slate-400 mb-0.5">Risk/Reward</p>
-                        <p className="text-white font-bold">1 : {analysis.riskReward?.toFixed(2)}</p>
+                        <p className="text-white font-bold">1 : {fmt(analysis.riskReward)}</p>
                       </div>
-                      <div className="flex-1 bg-slate-800/50 rounded-lg p-2 text-center">
+                      <div className="flex-1 bg-white/[0.04] rounded-lg p-2 text-center">
                         <p className="text-xs text-slate-400 mb-0.5">ถือ</p>
                         <p className="text-white font-bold">{analysis.timeframe}</p>
                       </div>
@@ -726,7 +1290,7 @@ export default function Home() {
 
                     {/* Exit Strategy */}
                     {analysis.exitStrategy && (
-                      <div className="bg-slate-800/40 rounded-lg p-3">
+                      <div className="bg-white/[0.04] rounded-lg p-3">
                         <p className="text-xs text-yellow-400 font-medium mb-1">🚪 กลยุทธ์การออก</p>
                         <p className="text-xs text-slate-300 leading-relaxed">{analysis.exitStrategy}</p>
                       </div>
@@ -771,7 +1335,7 @@ export default function Home() {
               const holdPct = 100 - bullPct - bearPct;
               const recColor: Record<string, string> = { buy: "text-green-400", strongbuy: "text-green-300", hold: "text-yellow-400", sell: "text-red-400", strongsell: "text-red-300" };
               return (
-                <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+                <div className="card spotlight p-5">
                   <h3 className="font-semibold text-white mb-4">Analyst Ratings (Wall Street)</h3>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div className="space-y-3">
@@ -803,7 +1367,7 @@ export default function Home() {
                       {a.targetLow && <div className="flex justify-between"><span className="text-slate-400">Low</span><span className="text-slate-300">${a.targetLow.toFixed(2)}</span></div>}
                       {a.targetHigh && <div className="flex justify-between"><span className="text-slate-400">High</span><span className="text-slate-300">${a.targetHigh.toFixed(2)}</span></div>}
                       {a.targetPrice && data.price && (
-                        <div className="flex justify-between border-t border-slate-800 pt-2 mt-2">
+                        <div className="flex justify-between border-t border-white/5 pt-2 mt-2">
                           <span className="text-slate-400">Upside</span>
                           <span className={a.targetPrice > data.price ? "text-green-400 font-medium" : "text-red-400 font-medium"}>
                             {a.targetPrice > data.price ? "+" : ""}{(((a.targetPrice - data.price) / data.price) * 100).toFixed(1)}%
@@ -827,7 +1391,7 @@ export default function Home() {
 
             {/* News Section */}
             {(news.length > 0 || analyzing) && (
-              <div className="bg-slate-900 rounded-xl border border-slate-800 p-5">
+              <div className="card spotlight p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="font-semibold text-white">ข่าวล่าสุด</h3>
                   {analysis?.newsSentiment && (
@@ -838,7 +1402,7 @@ export default function Home() {
                 </div>
 
                 {analysis?.newsSummaryTH && (
-                  <p className="text-sm text-slate-300 leading-relaxed mb-4 pb-4 border-b border-slate-800">
+                  <p className="text-sm text-slate-300 leading-relaxed mb-4 pb-4 border-b border-white/5">
                     📰 {analysis.newsSummaryTH}
                   </p>
                 )}
@@ -847,7 +1411,7 @@ export default function Home() {
                   {news.map((item, i) => {
                     const aiItem = analysis?.newsItems?.[i];
                     return (
-                      <div key={i} className="flex gap-3 p-3 bg-slate-800/50 rounded-lg hover:bg-slate-800 transition">
+                      <div key={i} className="flex gap-3 p-3 bg-white/[0.03] rounded-xl hover:bg-violet-500/10 transition">
                         <div className="flex-1 min-w-0">
                           {aiItem ? (
                             <p className="text-sm text-white font-medium leading-snug mb-1">{aiItem.title}</p>
@@ -879,6 +1443,82 @@ export default function Home() {
                     );
                   })}
                 </div>
+              </div>
+            )}
+
+            {/* History Panel */}
+            {history.length > 0 && (
+              <div className="card spotlight p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-white">ประวัติการวิเคราะห์</h3>
+                  <button
+                    onClick={() => setShowHistory(v => !v)}
+                    className="text-xs text-slate-400 hover:text-white transition"
+                  >
+                    {showHistory ? "ซ่อน ▲" : `ดูทั้งหมด (${history.length}) ▼`}
+                  </button>
+                </div>
+                {showHistory && (() => {
+                  const byDate: Record<string, HistoryItem[]> = {};
+                  history.forEach(h => {
+                    const d = new Date(h.created_at).toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+                    if (!byDate[d]) byDate[d] = [];
+                    byDate[d].push(h);
+                  });
+                  return (
+                    <div className="space-y-4">
+                      {Object.entries(byDate).map(([date, items]) => (
+                        <div key={date}>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-medium text-slate-400">
+                              {new Date(date + "T00:00:00+07:00").toLocaleDateString("th-TH", { weekday: "long", day: "numeric", month: "long" })}
+                            </span>
+                            <button
+                              onClick={() => data && deleteByDate(data.symbol, date)}
+                              className="text-xs text-red-400/60 hover:text-red-400 transition"
+                            >
+                              ลบทั้งวัน
+                            </button>
+                          </div>
+                          <div className="space-y-2">
+                            {items.map(h => (
+                              <div key={h.id} className="flex items-start gap-3 p-3 bg-white/[0.03] rounded-xl">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-xs text-slate-500">{formatThaiDate(h.created_at)}</span>
+                                    {h.suggestion_th && (
+                                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                                        h.suggestion === "Buy" ? "bg-green-500/20 text-green-400" :
+                                        h.suggestion === "Avoid" ? "bg-red-500/20 text-red-400" :
+                                        "bg-yellow-500/20 text-yellow-400"
+                                      }`}>{h.suggestion_th}</span>
+                                    )}
+                                    {h.score != null && (
+                                      <span className="text-xs text-slate-400">คะแนน {h.score}/10</span>
+                                    )}
+                                    {h.trend_th && (
+                                      <span className="text-xs text-slate-500">{h.trend_th}</span>
+                                    )}
+                                  </div>
+                                  {h.tldr && <p className="text-xs text-slate-400 mt-1 line-clamp-2">{h.tldr}</p>}
+                                </div>
+                                <button
+                                  onClick={() => deleteHistory(h.id)}
+                                  className="text-slate-600 hover:text-red-400 transition shrink-0 mt-0.5"
+                                  title="ลบรายการนี้"
+                                >
+                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </>

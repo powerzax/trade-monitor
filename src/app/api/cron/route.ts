@@ -20,12 +20,6 @@ export async function GET() {
     if (!res.ok) throw new Error("Market overview failed");
     const analysis = await res.json();
 
-    // บันทึกผลลัพธ์ใน DB
-    await sql`
-      INSERT INTO analysis_cache (type, result)
-      VALUES ('market_overview', ${JSON.stringify(analysis)}::jsonb)
-    `;
-
     // ส่ง Telegram (ถ้ามี token)
     if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
       const mood = analysis.marketMood === "bullish" ? "🟢" : analysis.marketMood === "bearish" ? "🔴" : analysis.marketMood === "mixed" ? "🟡" : "⚪";

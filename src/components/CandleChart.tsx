@@ -18,34 +18,53 @@ interface Indicators {
   resistance?: number[];
 }
 
+export interface PriceLine {
+  price: number;
+  color: string;
+  title: string;
+  dashed?: boolean;
+}
+
+export interface ProjectionPoint {
+  time: number;
+  p10: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p90: number;
+}
+
 interface Props {
   candles: Candle[];
   indicators?: Indicators | null;
+  priceLines?: PriceLine[];
+  projection?: ProjectionPoint[] | null;
 }
 
-export default function CandleChart({ candles, indicators }: Props) {
+export default function CandleChart({ candles, indicators, priceLines, projection }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const linesKey = JSON.stringify(priceLines ?? []);
 
   useEffect(() => {
     if (!containerRef.current || candles.length === 0) return;
 
     const chart = createChart(containerRef.current, {
-      layout: { background: { type: ColorType.Solid, color: "#111827" }, textColor: "#9ca3af" },
-      grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
+      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: "#9a97b5" },
+      grid: { vertLines: { color: "rgba(255,255,255,0.04)" }, horzLines: { color: "rgba(255,255,255,0.04)" } },
       crosshair: { mode: 1 },
-      rightPriceScale: { borderColor: "#1f2937" },
-      timeScale: { borderColor: "#1f2937", timeVisible: true },
+      rightPriceScale: { borderColor: "rgba(255,255,255,0.08)" },
+      timeScale: { borderColor: "rgba(255,255,255,0.08)", timeVisible: true },
       width: containerRef.current.clientWidth,
       height: 380,
     });
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: "#4ade80",
-      downColor: "#f87171",
-      borderUpColor: "#4ade80",
-      borderDownColor: "#f87171",
-      wickUpColor: "#4ade80",
-      wickDownColor: "#f87171",
+      upColor: "#6ee7b7",
+      downColor: "#f472b6",
+      borderUpColor: "#6ee7b7",
+      borderDownColor: "#f472b6",
+      wickUpColor: "#6ee7b7",
+      wickDownColor: "#f472b6",
     });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -73,6 +92,24 @@ export default function CandleChart({ candles, indicators }: Props) {
       maSeries.setData([{ time: lastTime as any, value: indicators.ma20 }]);
     }
 
+    for (const l of priceLines ?? []) {
+      if (!Number.isFinite(l.price)) continue;
+      candleSeries.createPriceLine({ price: l.price, color: l.color, lineWidth: 1, lineStyle: l.dashed ? 2 : 0, axisLabelVisible: true, title: l.title });
+    }
+
+    if (projection?.length) {
+      const band = (key: keyof ProjectionPoint, color: string, width: 1 | 2, style: number) => {
+        const s = chart.addSeries(LineSeries, { color, lineWidth: width, lineStyle: style, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        s.setData(projection.map((p) => ({ time: p.time as any, value: p[key] })));
+      };
+      band("p90", "rgba(167,139,250,0.35)", 1, 2);
+      band("p75", "rgba(167,139,250,0.7)", 1, 0);
+      band("p50", "#e9d5ff", 2, 2);
+      band("p25", "rgba(167,139,250,0.7)", 1, 0);
+      band("p10", "rgba(167,139,250,0.35)", 1, 2);
+    }
+
     chart.timeScale().fitContent();
 
     const ro = new ResizeObserver(() => {
@@ -81,7 +118,8 @@ export default function CandleChart({ candles, indicators }: Props) {
     ro.observe(containerRef.current);
 
     return () => { chart.remove(); ro.disconnect(); };
-  }, [candles, indicators]);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candles, indicators, linesKey, projection]);
 
   return <div ref={containerRef} className="w-full" />;
 }

@@ -1,17 +1,666 @@
 @import "tailwindcss";
 
 :root {
-  --background: #0a0e1a;
-  --foreground: #e2e8f0;
+  --background: #0a0915;
+  --foreground: #f4f3ff;
+  --surface: #14122a;
+  --surface-2: #1b1836;
+  --surface-border: rgba(255, 255, 255, 0.08);
+  --muted: #9a97b5;
+  --accent: #8b5cf6;
+  --accent-2: #c084fc;
+  --accent-soft: rgba(139, 92, 246, 0.18);
+  --accent-glow: rgba(167, 139, 250, 0.55);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-border: var(--surface-border);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-accent-soft: var(--accent-soft);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
 }
 
 body {
-  background: var(--background);
+  background-color: var(--background);
+  background-image:
+    radial-gradient(ellipse 900px 650px at 0% -10%, rgba(139, 92, 246, 0.28), transparent 60%),
+    radial-gradient(ellipse 750px 700px at 105% 10%, rgba(192, 132, 252, 0.16), transparent 55%),
+    radial-gradient(ellipse 1000px 800px at 40% 115%, rgba(76, 29, 149, 0.35), transparent 60%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
   color: var(--foreground);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+}
+
+/* Pair with Tailwind's own `backdrop-blur-lg` utility (not a hardcoded backdrop-filter here) —
+   Tailwind v4 applies a universal composed backdrop-filter reset that overrides a hardcoded
+   value declared in a custom @utility, so the blur must come from Tailwind's own utility class. */
+@utility glass-accent {
+  background: linear-gradient(135deg, rgba(167, 139, 250, 0.95) 0%, rgba(124, 58, 237, 0.92) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.45),
+    inset 0 -10px 14px -10px rgba(0, 0, 0, 0.35),
+    0 10px 28px -10px var(--accent-glow);
+}
+
+@utility glass {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.03) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.16),
+    0 6px 20px -8px rgba(0, 0, 0, 0.45);
+}
+
+/* The border is a gradient (light catching the top-left edge, a violet glint at
+   the bottom-right) drawn as a second background clipped to the border box. */
+@utility card {
+  border-radius: 1rem;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, rgba(30, 27, 60, 0.78) 0%, rgba(20, 18, 42, 0.7) 100%) padding-box,
+    linear-gradient(
+        140deg,
+        rgba(221, 214, 254, 0.28) 0%,
+        rgba(255, 255, 255, 0.06) 28%,
+        rgba(255, 255, 255, 0.04) 70%,
+        rgba(167, 139, 250, 0.3) 100%
+      )
+      border-box;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 18px 40px -20px rgba(0, 0, 0, 0.7);
+}
+
+/* A slow orbiting light around the edge, for the one or two hero panels. */
+@property --ring-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes ring-orbit {
+  to {
+    --ring-angle: 360deg;
+  }
+}
+.glow-ring {
+  position: relative;
+}
+.glow-ring > .glow-ring-edge {
+  pointer-events: none;
+  position: absolute;
+  inset: -1px;
+  z-index: 1;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--ring-angle),
+    transparent 0deg 210deg,
+    rgba(139, 92, 246, 0.85) 275deg,
+    rgba(232, 222, 255, 1) 325deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: ring-orbit 8s linear infinite;
+}
+
+/* Chart entrances. */
+@keyframes grow-up {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+.grow-up {
+  transform-origin: bottom;
+  animation: grow-up 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes grow-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+.grow-x {
+  transform-origin: left;
+  animation: grow-x 800ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+/* Draws a ring's arc in from zero; the arc's own dasharray is the end state. */
+@keyframes ring-draw {
+  from {
+    stroke-dasharray: 0 var(--ring-len, 400);
+  }
+}
+.ring-draw {
+  animation: ring-draw 1100ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes wipe-in {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+.wipe-in {
+  animation: wipe-in 1100ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* A card placed inside another card (e.g. a chart inside a Section) drops its own
+   frame and glow so panels never double up. */
+.card .card {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  border-radius: 0;
+}
+.card .spotlight::before,
+.card .spotlight::after {
+  display: none;
+}
+
+/* ── Spotlight: SpotlightTracker writes the pointer position into --mx/--my on
+   the hovered element. ::before is a soft glow behind the content; ::after
+   lights up only the 1px edge nearest the cursor via a mask. ─────────────── */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .spotlight {
+    position: relative;
+    isolation: isolate;
+  }
+  .spotlight::before,
+  .spotlight::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 400ms ease;
+  }
+  .spotlight::before {
+    z-index: -1;
+    background: radial-gradient(420px circle at var(--mx, 50%) var(--my, 50%), rgba(167, 139, 250, 0.1), transparent 45%);
+  }
+  .spotlight::after {
+    padding: 1px;
+    background: radial-gradient(
+      240px circle at var(--mx, 50%) var(--my, 50%),
+      rgba(196, 181, 253, 0.8),
+      rgba(139, 92, 246, 0.3) 40%,
+      transparent 70%
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+  .spotlight:hover::before,
+  .spotlight:hover::after {
+    opacity: 1;
+  }
+}
+
+/* Faint dot grid fading in from the right of each page header. */
+.page-header-grid {
+  background-image: radial-gradient(rgba(196, 181, 253, 0.4) 1px, transparent 1.2px);
+  background-size: 18px 18px;
+  -webkit-mask-image: linear-gradient(to left, #000 0%, transparent 85%);
+  mask-image: linear-gradient(to left, #000 0%, transparent 85%);
+  opacity: 0.45;
+}
+
+@keyframes route-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.route-reveal {
+  animation: route-reveal 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.sheet-up {
+  animation: sheet-up 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+.drawer-panel {
+  animation: sheet-up 340ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@media (min-width: 40rem) {
+  .drawer-panel {
+    animation-name: slide-in-right;
+  }
+}
+.fade-in {
+  animation: fade-in 200ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-reveal,
+  .sheet-up,
+  .drawer-panel,
+  .fade-in,
+  .grow-up,
+  .grow-x,
+  .ring-draw,
+  .wipe-in,
+  .glow-ring > .glow-ring-edge {
+    animation: none;
+  }
+}
+
+/* ── Ambient background ────────────────────────────────────────────────────
+   Soft colour fields that drift, a faint savings curve, and a few coins and
+   sparkles rising slowly. Everything is low-contrast and slow so it reads as
+   atmosphere behind the glass cards, never as content. */
+.ambient-blob {
+  position: absolute;
+  border-radius: 9999px;
+  will-change: transform;
+}
+.ambient-blob-a {
+  width: 70vmax;
+  height: 70vmax;
+  left: -20vmax;
+  top: -25vmax;
+  background: radial-gradient(closest-side, rgba(139, 92, 246, 0.32), transparent);
+  animation: ambient-drift-a 48s ease-in-out infinite alternate;
+}
+.ambient-blob-b {
+  width: 60vmax;
+  height: 60vmax;
+  right: -22vmax;
+  top: 10vh;
+  background: radial-gradient(closest-side, rgba(192, 132, 252, 0.18), transparent);
+  animation: ambient-drift-b 62s ease-in-out infinite alternate;
+}
+.ambient-blob-c {
+  width: 65vmax;
+  height: 65vmax;
+  left: 15vw;
+  bottom: -35vmax;
+  background: radial-gradient(closest-side, rgba(16, 185, 129, 0.13), rgba(76, 29, 149, 0.12) 55%, transparent);
+  animation: ambient-drift-c 75s ease-in-out infinite alternate;
+}
+@keyframes ambient-drift-a {
+  to {
+    transform: translate(12vw, 10vh) scale(1.15);
+  }
+}
+@keyframes ambient-drift-b {
+  to {
+    transform: translate(-14vw, 18vh) scale(0.9);
+  }
+}
+@keyframes ambient-drift-c {
+  to {
+    transform: translate(-10vw, -12vh) scale(1.1);
+  }
+}
+
+/* A faint dot grid, fading out toward the top like graph paper under the curve. */
+.ambient-grid {
+  background-image: radial-gradient(rgba(196, 181, 253, 0.16) 1px, transparent 1.2px);
+  background-size: 28px 28px;
+  -webkit-mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.35) 45%, transparent 85%);
+  mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.35) 45%, transparent 85%);
+}
+
+/* A short bright segment that travels along the savings curve now and then. */
+.ambient-growth-glint {
+  stroke-dasharray: 6 94;
+  stroke-dashoffset: 100;
+  opacity: 0.8;
+  filter: drop-shadow(0 0 6px #c4b5fd);
+  animation: ambient-glint 9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes ambient-glint {
+  0% {
+    stroke-dashoffset: 100;
+    opacity: 0;
+  }
+  8% {
+    opacity: 0.8;
+  }
+  60% {
+    stroke-dashoffset: 0;
+    opacity: 0.8;
+  }
+  70%,
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+}
+
+.ambient-vignette {
+  background: radial-gradient(ellipse 120% 90% at 50% 40%, transparent 55%, rgba(5, 4, 12, 0.55) 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-blob,
+  .ambient-growth-glint {
+    animation: none;
+  }
+}
+
+/* The savings columns breathe very slightly, one after another. */
+.ambient-bar {
+  transform-box: fill-box;
+  transform-origin: bottom;
+  animation: ambient-breathe 7s ease-in-out infinite;
+}
+@keyframes ambient-breathe {
+  0%,
+  100% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scaleY(1.06);
+    opacity: 0.7;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ambient-bar {
+    animation: none;
+  }
+}
+
+/* ── Holographic 3D cards ──────────────────────────────────────────────────
+   .holo cards tilt toward the cursor (--rx/--ry from SpotlightTracker, or the
+   phone's orientation via --device-rx/--device-ry) and get an iridescent
+   sheen that slides with the pointer, layered over the spotlight glow. */
+.holo {
+  transform: perspective(900px) rotateX(var(--rx, var(--device-rx, 0deg))) rotateY(var(--ry, var(--device-ry, 0deg)));
+  transform-style: preserve-3d;
+  transition: transform 450ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+.holo:hover {
+  transition-duration: 120ms;
+}
+.holo .holo-sheen {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  opacity: 0;
+  mix-blend-mode: color-dodge;
+  background:
+    radial-gradient(circle at var(--holo-pos, 50% 50%), rgba(255, 255, 255, 0.22), transparent 40%),
+    linear-gradient(
+      115deg,
+      transparent 20%,
+      rgba(96, 165, 250, 0.25) 36%,
+      rgba(192, 132, 252, 0.3) 46%,
+      rgba(110, 231, 183, 0.25) 56%,
+      rgba(251, 191, 36, 0.2) 64%,
+      transparent 78%
+    );
+  background-size:
+    100% 100%,
+    250% 250%;
+  background-position:
+    0 0,
+    var(--holo-pos, 50% 50%);
+  transition: opacity 300ms ease;
+}
+@media (hover: hover) {
+  .holo:hover .holo-sheen {
+    opacity: 1;
+  }
+}
+@media (hover: none) {
+  .holo .holo-sheen {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .holo {
+    transform: none;
+  }
+}
+
+/* ── Live ticker tape ───────────────────────────────────────────────────── */
+.ticker-track {
+  animation: ticker-scroll linear infinite;
+}
+.ticker:hover .ticker-track {
+  animation-play-state: paused;
+}
+@keyframes ticker-scroll {
+  to {
+    transform: translateX(-50%);
+  }
+}
+.ticker-mask {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 4%, #000 96%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 4%, #000 96%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ticker-track {
+    animation: none;
+  }
+}
+
+/* ── AI assistant orb & panel ───────────────────────────────────────────── */
+.assistant-orb {
+  background: radial-gradient(circle at 30% 30%, #ddd6fe, #8b5cf6 45%, #4c1d95 100%);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.25) inset,
+    0 10px 30px -6px var(--accent-glow),
+    0 0 40px -8px rgba(110, 231, 183, 0.6);
+}
+.assistant-orb-ring {
+  position: absolute;
+  inset: -4px;
+  border-radius: 9999px;
+  padding: 2px;
+  background: conic-gradient(from var(--ring-angle), transparent 0deg 200deg, #6ee7b7 280deg, #e9d5ff 330deg, transparent 360deg);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: ring-orbit 3.5s linear infinite;
+}
+.assistant-panel {
+  animation: assistant-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: bottom right;
+}
+@keyframes assistant-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.96);
+  }
+}
+.assistant-scan {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(167, 139, 250, 0.25), transparent);
+  animation: sweep 1.4s linear infinite;
+}
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* ── Boot sequence (first open of the day) ─────────────────────────────── */
+.boot-overlay {
+  display: none;
+}
+html[data-booting] .boot-overlay {
+  display: flex;
+  animation: boot-out 450ms ease-in 1.55s both;
+}
+html[data-booting] body:has(.boot-overlay) {
+  overflow: hidden;
+}
+.boot-line {
+  opacity: 0;
+  animation: boot-line 220ms ease-out both;
+}
+@keyframes boot-line {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.boot-bar {
+  transform-origin: left;
+  animation: grow-x 1.3s cubic-bezier(0.65, 0, 0.35, 1) 0.15s both;
+}
+.boot-core {
+  animation: boot-core 1.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes boot-core {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+    filter: blur(8px);
+  }
+  40% {
+    transform: scale(1.08);
+    opacity: 1;
+    filter: none;
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes boot-out {
+  to {
+    opacity: 0;
+    transform: scale(1.06);
+    visibility: hidden;
+  }
+}
+.boot-scanlines {
+  background: repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 3px);
+}
+
+/* ── Morph navigation (MorphNavigator) ───────────────────────────────────
+   The clicked card and the next page's header share the "morph" name for one
+   transition; the rest of the page swaps without the browser's crossfade and
+   comes in with the app's own reveal. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+::view-transition-group(morph) {
+  animation-duration: 520ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 50;
+}
+::view-transition-old(morph),
+::view-transition-new(morph) {
+  height: 100%;
+  object-fit: cover;
+}
+::view-transition-image-pair(morph) {
+  animation-name: morph-glow;
+  animation-duration: 520ms;
+}
+@keyframes morph-glow {
+  45% {
+    filter: blur(2px) brightness(1.5) drop-shadow(0 0 24px rgba(167, 139, 250, 0.8));
+  }
+}
+
+/* Gentle water-line ripple on top of the house fill. */
+.house-wave {
+  animation: house-wave 3.2s ease-in-out infinite alternate;
+}
+@keyframes house-wave {
+  from {
+    transform: translateX(-6px);
+  }
+  to {
+    transform: translateX(6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .house-wave {
+    animation: none;
+  }
+}
+
+/* Simulator sliders: violet track fill and a glowing thumb. */
+.sim-range {
+  accent-color: var(--accent);
+  height: 1.5rem;
+  cursor: pointer;
+}
+
+/* ── Just-saved row ──────────────────────────────────────────────────────── */
+@keyframes tx-flash {
+  0%,
+  35% {
+    background-color: color-mix(in oklab, var(--accent) 28%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.tx-flash {
+  animation: tx-flash 2.2s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tx-flash {
+    animation: none;
+    background-color: color-mix(in oklab, var(--accent) 18%, transparent);
+  }
 }
