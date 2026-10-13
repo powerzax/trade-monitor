@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createChart, ColorType, CandlestickSeries, LineSeries, BaselineSeries, createSeriesMarkers } from "lightweight-charts";
 
 interface Candle {
@@ -55,6 +55,7 @@ interface Props {
 export default function CandleChart({ candles, indicators, priceLines, projection, supertrend, stopZone, markers, pro = false }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const linesKey = JSON.stringify(priceLines ?? []);
+  const [picked, setPicked] = useState<ChartMarker | null>(null);
 
   useEffect(() => {
     if (!containerRef.current || candles.length === 0) return;
@@ -66,7 +67,7 @@ export default function CandleChart({ candles, indicators, priceLines, projectio
       rightPriceScale: { borderColor: "rgba(255,255,255,0.08)" },
       timeScale: { borderColor: "rgba(255,255,255,0.08)", timeVisible: true },
       width: containerRef.current.clientWidth,
-      height: 380,
+      height: containerRef.current.clientWidth < 640 ? 300 : 380,
     });
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
@@ -159,8 +160,19 @@ export default function CandleChart({ candles, indicators, priceLines, projectio
     const total = candles.length + Math.max(0, (projection?.length ?? 1) - 1);
     chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, candles.length - 130), to: total + 2 });
 
+    const shownForClick = (markers ?? []).filter((m) => pro || m.kind === "trend");
+    chart.subscribeClick((param) => {
+      if (param.time == null) return setPicked(null);
+      const t = Number(param.time);
+      const near = shownForClick
+        .map((m) => ({ m, d: Math.abs(m.time - t) }))
+        .filter((x) => x.d <= 3 * 86400)
+        .sort((a, b) => a.d - b.d)[0];
+      setPicked(near ? near.m : null);
+    });
+
     const ro = new ResizeObserver(() => {
-      if (containerRef.current) chart.applyOptions({ width: containerRef.current.clientWidth });
+      if (containerRef.current) chart.applyOptions({ width: containerRef.current.clientWidth, height: containerRef.current.clientWidth < 640 ? 300 : 380 });
     });
     ro.observe(containerRef.current);
 
@@ -168,5 +180,20 @@ export default function CandleChart({ candles, indicators, priceLines, projectio
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candles, indicators, linesKey, projection, supertrend, stopZone?.upper, stopZone?.lower, markers, pro]);
 
-  return <div ref={containerRef} className="w-full" />;
+  return (
+    <div>
+      <div ref={containerRef} className="w-full touch-pan-y" />
+      {picked ? (
+        <div className={`mt-2 flex items-start justify-between gap-3 rounded-xl border px-3 py-2 text-xs ${picked.fwd10 == null ? "border-white/10 bg-white/5 text-slate-300" : picked.dir * picked.fwd10 > 0 ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-100" : "border-rose-400/30 bg-rose-400/10 text-rose-100"}`}>
+          <span>
+            {picked.dir === 1 ? "▲" : "▼"} {new Date(picked.time * 1000).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })}:{" "}
+            {picked.kind === "trend" ? (picked.dir === 1 ? "เส้นทิศทางเปลี่ยนเป็นขาขึ้น (สีเขียว)" : "เส้นทิศทางเปลี่ยนเป็นขาลง (สีแดง)") : (picked.dir === 1 ? "คะแนนรวมขึ้นถึง +3 (สัญญาณซื้อ)" : "คะแนนรวมลงถึง -3 (สัญญาณขาย)")}
+            {" → "}
+            {picked.fwd10 == null ? "ยังไม่ครบ 10 วัน รอดูผล" : `10 วันต่อมาราคา ${picked.fwd10 >= 0 ? "+" : ""}${picked.fwd10}% ${picked.dir * picked.fwd10 > 0 ? "✓ ทายถูก" : "✗ ทายผิด"}`}
+          </span>
+          <button onClick={() => setPicked(null)} className="opacity-60 hover:opacity-100">✕</button>
+        </div>
+      ) : (markers?.length ? <p className="mt-2 text-[11px] text-slate-500">แตะที่ลูกศรบนกราฟเพื่อดูว่าตรงนั้นเกิดอะไรขึ้น</p> : null)}
+    </div>
+  );
 }

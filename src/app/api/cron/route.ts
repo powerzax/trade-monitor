@@ -21,9 +21,10 @@ export async function GET(req: NextRequest) {
 
     // เรียก market overview API
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "https://trade-monitor-two.vercel.app";
+    const internal: Record<string, string> = secret ? { Authorization: `Bearer ${secret}` } : {};
     const res = await fetch(`${baseUrl}/api/market-overview`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...internal },
       body: JSON.stringify({ favorites }),
     });
 
@@ -49,13 +50,13 @@ export async function GET(req: NextRequest) {
       try {
         const sym = h.symbol.replace(/-USD$/, "");
         const [stock, news] = await Promise.all([
-          fetch(`${baseUrl}/api/stock?symbol=${sym}&crypto=${h.crypto}`).then((r) => r.json()),
-          fetch(`${baseUrl}/api/news?symbol=${h.symbol}`).then((r) => r.json()).catch(() => ({ items: [] })),
+          fetch(`${baseUrl}/api/stock?symbol=${sym}&crypto=${h.crypto}`, { headers: internal }).then((r) => r.json()),
+          fetch(`${baseUrl}/api/news?symbol=${h.symbol}`, { headers: internal }).then((r) => r.json()).catch(() => ({ items: [] })),
         ]);
         if (stock.error) throw new Error(stock.error);
         const a = await fetch(`${baseUrl}/api/analyze`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...internal },
           body: JSON.stringify({ ...stock, news: news.items ?? [], position: h }),
         }).then((r) => r.json());
         holdingResults.push({ symbol: h.symbol, ok: !a.error, action: a.positionAdvice?.actionTH });

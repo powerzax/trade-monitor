@@ -45,7 +45,7 @@ export function Term({ id, value, children }: { id: keyof typeof GLOSSARY | stri
     <span tabIndex={0} className="group relative inline-flex cursor-help items-center gap-1 outline-none">
       <span className="border-b border-dotted border-slate-500/70">{children}</span>
       <span className="text-[10px] text-slate-500 group-hover:text-violet-300">ⓘ</span>
-      <span className="pointer-events-none invisible absolute bottom-full left-0 z-40 mb-2 w-64 rounded-xl border border-violet-400/30 bg-[#15122b] p-3 text-left text-xs font-normal normal-case tracking-normal text-slate-200 opacity-0 shadow-2xl shadow-black/50 backdrop-blur-xl transition group-hover:visible group-hover:opacity-100 group-focus:visible group-focus:opacity-100">
+      <span className="pointer-events-none invisible fixed inset-x-4 bottom-24 z-50 sm:absolute sm:inset-x-auto sm:bottom-full sm:left-0 sm:mb-2 sm:w-64 rounded-xl border border-violet-400/30 bg-[#15122b] p-3 text-left text-xs font-normal normal-case tracking-normal text-slate-200 opacity-0 shadow-2xl shadow-black/50 backdrop-blur-xl transition group-hover:visible group-hover:opacity-100 group-focus:visible group-focus:opacity-100">
         <span className="block">{g.what}</span>
         {g.now && value != null && Number.isFinite(value) && <span className="mt-1.5 block font-medium text-violet-200">ตอนนี้: {g.now(value)}</span>}
       </span>

@@ -10,6 +10,7 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 export const metadata: Metadata = {
   title: "Trade Monitor",
   description: "Stock & Crypto analysis for swing trading",
+  appleWebApp: { capable: true, title: "Trade Monitor", statusBarStyle: "black-translucent" },
 };
 
 export const viewport: Viewport = {

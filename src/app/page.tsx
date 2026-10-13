@@ -626,17 +626,17 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen text-slate-200">
-      <header className="sticky top-0 z-30 border-b border-white/5 bg-[#0a0915]/60 backdrop-blur-xl px-6 py-4">
+    <div className="min-h-screen overflow-x-clip text-slate-200">
+      <header className="sticky top-0 z-30 border-b border-white/5 bg-[#0a0915]/60 backdrop-blur-xl px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6 sm:py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="assistant-orb relative grid h-10 w-10 place-items-center rounded-full text-lg"><span className="assistant-orb-ring" />📈</div>
+            <div className="assistant-orb relative grid h-9 w-9 shrink-0 place-items-center rounded-full text-base sm:h-10 sm:w-10 sm:text-lg"><span className="assistant-orb-ring" />📈</div>
             <div>
-              <h1 className="text-xl font-bold bg-gradient-to-r from-white via-violet-200 to-violet-400 bg-clip-text text-transparent">Trade Monitor</h1>
-              <p className="text-xs text-slate-500">US Stocks & Crypto · Swing Trade Analysis</p>
+              <h1 className="whitespace-nowrap text-lg sm:text-xl font-bold bg-gradient-to-r from-white via-violet-200 to-violet-400 bg-clip-text text-transparent">Trade Monitor</h1>
+              <p className="hidden text-xs text-slate-500 sm:block">US Stocks & Crypto · Swing Trade Analysis</p>
             </div>
           </div>
-          <div className="flex glass backdrop-blur-lg rounded-xl p-1 gap-1">
+          <div className="hidden sm:flex glass backdrop-blur-lg rounded-xl p-1 gap-1">
             <button
               onClick={() => setActiveTab("overview")}
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === "overview" ? "glass-accent text-white" : "text-slate-400 hover:text-white"}`}
@@ -671,14 +671,14 @@ export default function Home() {
             );
           });
           return (
-            <div className="ticker ticker-mask -mx-6 mt-3 -mb-4 overflow-hidden border-t border-white/5 py-2">
+            <div className="ticker ticker-mask -mx-4 mt-3 -mb-3 sm:-mx-6 sm:-mb-4 overflow-hidden border-t border-white/5 py-2">
               <div className="ticker-track flex w-max" style={{ animationDuration: `${quotes.length * 5}s` }}>{row("a")}{row("b")}</div>
             </div>
           );
         })()}
       </header>
 
-      <main className="route-reveal max-w-7xl mx-auto px-4 py-6 space-y-6">
+      <main className="route-reveal max-w-7xl mx-auto px-4 pt-6 pb-28 sm:pb-6 space-y-6">
 
         {/* ===== MARKET OVERVIEW TAB ===== */}
         {activeTab === "overview" && (
@@ -1149,13 +1149,13 @@ export default function Home() {
           <div className="space-y-6">
         {/* Search */}
         <div className="card spotlight p-5">
-          <div className="flex gap-3 mb-4">
-            <div className="flex glass backdrop-blur-lg rounded-xl p-1 gap-1">
-              <button onClick={() => setIsCrypto(false)} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${!isCrypto ? "glass-accent text-white" : "text-slate-400 hover:text-white"}`}>US Stocks</button>
-              <button onClick={() => setIsCrypto(true)} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${isCrypto ? "bg-gradient-to-br from-amber-400 to-orange-600 text-white shadow-lg shadow-orange-500/30" : "text-slate-400 hover:text-white"}`}>Crypto</button>
+          <div className="flex flex-col sm:flex-row gap-3 mb-4">
+            <div className="flex glass backdrop-blur-lg rounded-xl p-1 gap-1 sm:w-auto">
+              <button onClick={() => setIsCrypto(false)} className={`flex-1 sm:flex-none px-4 py-1.5 rounded-md text-sm font-medium transition ${!isCrypto ? "glass-accent text-white" : "text-slate-400 hover:text-white"}`}>US Stocks</button>
+              <button onClick={() => setIsCrypto(true)} className={`flex-1 sm:flex-none px-4 py-1.5 rounded-md text-sm font-medium transition ${isCrypto ? "bg-gradient-to-br from-amber-400 to-orange-600 text-white shadow-lg shadow-orange-500/30" : "text-slate-400 hover:text-white"}`}>Crypto</button>
             </div>
-            <form onSubmit={(e) => { e.preventDefault(); if (query.trim()) search(query.trim(), isCrypto); }} className="flex flex-1 gap-2">
-              <input value={query} onChange={(e) => setQuery(e.target.value.toUpperCase())} placeholder={isCrypto ? "เช่น BTC, ETH, SOL..." : "เช่น AAPL, NVDA, TSLA..."} className="flex-1 glass rounded-xl px-4 py-2 text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500/60" />
+            <form onSubmit={(e) => { e.preventDefault(); if (query.trim()) search(query.trim(), isCrypto); }} className="flex min-w-0 flex-1 gap-2">
+              <input value={query} onChange={(e) => setQuery(e.target.value.toUpperCase())} placeholder={isCrypto ? "เช่น BTC, ETH, SOL..." : "เช่น AAPL, NVDA, TSLA..."} className="min-w-0 flex-1 glass rounded-xl px-4 py-2 text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500/60" />
               <button type="submit" disabled={loading} className="px-5 py-2 glass-accent hover:brightness-110 rounded-xl text-sm font-medium disabled:opacity-50 transition">{loading ? "กำลังโหลด..." : "วิเคราะห์"}</button>
             </form>
           </div>
@@ -1204,7 +1204,7 @@ export default function Home() {
                   <span className="glow-ring-edge" />
                   <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
                     <div className="flex items-center gap-4 sm:flex-col sm:gap-2">
-                      <div className="relative grid h-20 w-20 shrink-0 place-items-center rounded-full" style={{ background: `radial-gradient(circle at 35% 30%, #fff8, ${light.c} 45%, #0008 100%)`, boxShadow: `0 0 40px ${light.glow}, inset 0 0 0 1px #fff4` }}>
+                      <div className="relative grid h-14 w-14 shrink-0 place-items-center rounded-full sm:h-20 sm:w-20" style={{ background: `radial-gradient(circle at 35% 30%, #fff8, ${light.c} 45%, #0008 100%)`, boxShadow: `0 0 40px ${light.glow}, inset 0 0 0 1px #fff4` }}>
                         {analyzing && <span className="absolute inset-0 animate-ping rounded-full" style={{ background: light.glow }} />}
                         <span className="text-2xl">{sug === "Buy" ? "▲" : sug === "Avoid" ? "▼" : "◆"}</span>
                       </div>
@@ -1962,6 +1962,25 @@ export default function Home() {
           </div>
         )}
       </main>
+
+      {/* Mobile bottom navigation */}
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-[#0a0915]/85 backdrop-blur-xl pb-[env(safe-area-inset-bottom)] sm:hidden">
+        <div className="grid grid-cols-4">
+          {([
+            ["overview", "🌐", "ภาพรวม"],
+            ["detail", "🔍", "รายตัว"],
+            ["portfolio", "💼", "พอร์ต"],
+            ["accuracy", "🎯", "ความแม่น"],
+          ] as const).map(([tab, icon, label]) => (
+            <button key={tab} onClick={() => { setActiveTab(tab); window.scrollTo({ top: 0, behavior: "smooth" }); }} className={`relative flex flex-col items-center gap-0.5 py-2.5 text-[11px] transition ${activeTab === tab ? "text-white" : "text-slate-500"}`}>
+              {activeTab === tab && <span className="absolute inset-x-6 top-0 h-0.5 rounded-full bg-gradient-to-r from-violet-400 to-fuchsia-300 shadow-[0_0_12px_rgba(167,139,250,0.9)]" />}
+              <span className={`text-lg transition ${activeTab === tab ? "scale-110" : "opacity-70 grayscale"}`}>{icon}</span>
+              <span>{label}</span>
+              {tab === "portfolio" && holdings.length > 0 && <span className="absolute right-[28%] top-1.5 rounded-full bg-violet-500 px-1.5 text-[9px] text-white">{holdings.length}</span>}
+            </button>
+          ))}
+        </div>
+      </nav>
     </div>
   );
 }
