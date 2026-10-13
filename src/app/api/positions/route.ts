@@ -1,6 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sql, initDB } from "@/lib/db";
 
+type Row = { id: number; side: string; qty: number; bought_at: string };
+
+// Replays a symbol's trades in date order and reports the first sale that sells more than was held then.
+function sequenceError(rows: Row[]) {
+  let held = 0;
+  for (const r of [...rows].sort((a, b) => a.bought_at.localeCompare(b.bought_at) || a.id - b.id)) {
+    held += r.side === "sell" ? -r.qty : r.qty;
+    if (held < -1e-9) return `วันที่ ${r.bought_at} จะขายเกินกว่าที่ถืออยู่ตอนนั้น (ขาด ${Math.round(-held * 1e6) / 1e6} หน่วย)`;
+  }
+  return null;
+}
+
+async function rowsFor(symbol: string): Promise<Row[]> {
+  return (await sql`SELECT id, side, qty::float AS qty, to_char(bought_at, 'YYYY-MM-DD') AS bought_at FROM positions WHERE symbol = ${symbol}`) as Row[];
+}
+
+const validDate = (d: unknown) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d);
+
 export async function GET() {
   await initDB();
   const rows = await sql`
@@ -32,8 +50,8 @@ export async function POST(req: NextRequest) {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(boughtAt ?? "") ? boughtAt : new Date().toISOString().slice(0, 10);
 
   if (s === "sell") {
-    const held = await sql`SELECT COALESCE(SUM(CASE WHEN side = 'sell' THEN -qty ELSE qty END), 0)::float AS q FROM positions WHERE symbol = ${ticker}`;
-    if (q > held[0].q + 1e-9) return NextResponse.json({ error: `ขายได้ไม่เกินที่ถืออยู่ (${held[0].q} หน่วย)` }, { status: 400 });
+    const err = sequenceError([...(await rowsFor(ticker)), { id: Number.MAX_SAFE_INTEGER, side: "sell", qty: q, bought_at: date }]);
+    if (err) return NextResponse.json({ error: err }, { status: 400 });
   }
 
   await sql`
@@ -43,9 +61,32 @@ export async function POST(req: NextRequest) {
   return GET();
 }
 
+export async function PATCH(req: NextRequest) {
+  await initDB();
+  const { id, price, qty, boughtAt } = await req.json();
+  const p = Number(price), q = Number(qty);
+  if (!id || !(p > 0) || !(q > 0) || !validDate(boughtAt)) return NextResponse.json({ error: "กรอกราคา จำนวน และวันที่ให้ถูกต้อง" }, { status: 400 });
+  const cur = await sql`SELECT symbol FROM positions WHERE id = ${id}`;
+  if (!cur.length) return NextResponse.json({ error: "ไม่พบรายการนี้" }, { status: 404 });
+  const rows = (await rowsFor(cur[0].symbol)).map((r) => (r.id === id ? { ...r, qty: q, bought_at: boughtAt } : r));
+  const err = sequenceError(rows);
+  if (err) return NextResponse.json({ error: `แก้ไม่ได้: ${err}` }, { status: 400 });
+  await sql`UPDATE positions SET price = ${p}, qty = ${q}, bought_at = ${boughtAt} WHERE id = ${id}`;
+  return GET();
+}
+
 export async function DELETE(req: NextRequest) {
   const id = Number(req.nextUrl.searchParams.get("id"));
+  const symbol = req.nextUrl.searchParams.get("symbol");
+  if (symbol) {
+    await sql`DELETE FROM positions WHERE symbol = ${symbol}`;
+    return GET();
+  }
   if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+  const cur = await sql`SELECT symbol FROM positions WHERE id = ${id}`;
+  if (!cur.length) return GET();
+  const err = sequenceError((await rowsFor(cur[0].symbol)).filter((r) => r.id !== id));
+  if (err) return NextResponse.json({ error: `ลบไม่ได้: ${err} ลบรายการขายที่เกี่ยวข้องก่อน` }, { status: 400 });
   await sql`DELETE FROM positions WHERE id = ${id}`;
-  return NextResponse.json({ ok: true });
+  return GET();
 }

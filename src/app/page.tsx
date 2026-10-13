@@ -6,6 +6,7 @@ const CandleChart = dynamic(() => import("@/components/CandleChart"), { ssr: fal
 import type { ProjectionPoint, PriceLine, ChartMarker } from "@/components/CandleChart";
 import { computeHoldings, type Position } from "@/lib/portfolio";
 import { Term } from "@/components/Term";
+import { LotRow } from "@/components/LotRow";
 
 const POPULAR = [
   { symbol: "AAPL", label: "AAPL", crypto: false },
@@ -358,9 +359,26 @@ export default function Home() {
     setPosForm((f) => ({ ...f, symbol: "", price: "", qty: "" }));
   }
 
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+
+  async function applyPositions(res: Response): Promise<string | null> {
+    const j = await res.json().catch(() => ({ error: "เชื่อมต่อไม่ได้" }));
+    if (j.error) return j.error;
+    setPositions(j.positions ?? []);
+    return null;
+  }
+
+  async function savePosition(patch: { id: number; price: number; qty: number; boughtAt: string }) {
+    return applyPositions(await fetch("/api/positions", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }));
+  }
+
   async function deletePosition(id: number) {
-    await fetch(`/api/positions?id=${id}`, { method: "DELETE" });
-    setPositions((prev) => prev.filter((p) => p.id !== id));
+    return applyPositions(await fetch(`/api/positions?id=${id}`, { method: "DELETE" }));
+  }
+
+  async function removeHolding(symbol: string) {
+    await applyPositions(await fetch(`/api/positions?symbol=${encodeURIComponent(symbol)}`, { method: "DELETE" }));
+    setConfirmRemove(null);
   }
 
   function openSymbol(ticker: string, crypto: boolean) {
@@ -1032,16 +1050,23 @@ export default function Home() {
                           <span className="text-slate-400">ราคาตอนนี้ <span className="font-mono text-slate-200">{price != null ? money(price) : "…"}</span>{q && <span className={q.changePct >= 0 ? "text-emerald-300" : "text-rose-300"}> {q.changePct >= 0 ? "▲" : "▼"}{Math.abs(q.changePct).toFixed(2)}%</span>}</span>
                           <button onClick={() => openSymbol(h.symbol, h.crypto)} className="glass rounded-full px-3 py-1 text-violet-200 hover:bg-violet-500/20 transition">🔮 วิเคราะห์แนวโน้ม</button>
                         </div>
-                        <details className="mt-3 text-xs">
-                          <summary className="cursor-pointer text-slate-500 hover:text-slate-300">รายการซื้อขาย {h.lots.length} ครั้ง</summary>
-                          <div className="mt-2 space-y-1">
+                        <details className="mt-3 text-sm">
+                          <summary className="cursor-pointer select-none text-xs text-violet-300/90 hover:text-violet-200">📝 แก้ไข / ลบ รายการซื้อขาย ({h.lots.length})</summary>
+                          <div className="mt-2 space-y-1.5">
                             {h.lots.map((l) => (
-                              <div key={l.id} className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-1.5">
-                                <span className="text-slate-400">{new Date(l.bought_at + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })}</span>
-                                <span className={`font-mono ${l.side === "sell" ? "text-rose-300" : "text-slate-300"}`}>{l.side === "sell" ? "ขาย" : "ซื้อ"} {l.qty} × {money(l.price)}</span>
-                                <button onClick={() => deletePosition(l.id)} title="ลบรายการนี้" className="text-slate-600 hover:text-rose-400 transition">✕</button>
-                              </div>
+                              <LotRow key={`${l.id}-${l.price}-${l.qty}-${l.bought_at}`} lot={l} money={money} onSave={savePosition} onDelete={deletePosition} />
                             ))}
+                            <div className="flex justify-end pt-1">
+                              {confirmRemove === h.symbol ? (
+                                <span className="flex items-center gap-2 text-xs">
+                                  <span className="text-rose-200">ลบ {h.symbol.replace(/-USD$/, "")} ทั้งหมด {h.lots.length} รายการ?</span>
+                                  <button onClick={() => setConfirmRemove(null)} className="glass rounded-lg px-2.5 py-1 text-slate-300">ไม่</button>
+                                  <button onClick={() => removeHolding(h.symbol)} className="rounded-lg bg-rose-500/80 px-2.5 py-1 text-white">ลบทั้งหมด</button>
+                                </span>
+                              ) : (
+                                <button onClick={() => setConfirmRemove(h.symbol)} className="text-xs text-slate-500 hover:text-rose-300 transition">🗑 ลบ {h.symbol.replace(/-USD$/, "")} ออกจากพอร์ตทั้งตัว</button>
+                              )}
+                            </div>
                           </div>
                         </details>
                       </div>
@@ -1066,16 +1091,15 @@ export default function Home() {
                       const aiSaysSell = x.ai_action === "CutLoss" || x.ai_action === "TakeProfit" || (!x.ai_action && x.ai_suggestion === "Avoid");
                       const aiLabel = x.ai_action_th ?? (x.ai_suggestion === "Buy" ? "ซื้อได้" : x.ai_suggestion === "Wait" ? "รอจังหวะ" : x.ai_suggestion === "Avoid" ? "หลีกเลี่ยง" : null);
                       return (
-                        <div key={x.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/[0.03] px-4 py-3 text-sm">
-                          <div>
-                            <p className="font-semibold text-white">{x.symbol.replace(/-USD$/, "")} <span className="font-normal text-slate-500 text-xs">{new Date(x.bought_at + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })}</span></p>
-                            <p className="font-mono text-xs text-slate-400">ขาย {x.qty} × {money(x.price)} · ทุน {money(x.avgCostAtSale)}</p>
+                        <div key={x.id} className="space-y-2 rounded-xl border border-white/5 bg-white/[0.02] p-3 text-sm">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="font-semibold text-white">{x.symbol.replace(/-USD$/, "")} <span className="font-mono text-xs font-normal text-slate-500">ทุน {money(x.avgCostAtSale)}</span></p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {aiLabel && <span className={`rounded-full border px-2.5 py-0.5 text-xs ${aiSaysSell ? "border-emerald-300/30 bg-emerald-400/10 text-emerald-200" : "border-amber-300/30 bg-amber-400/10 text-amber-200"}`}>AI ตอนนั้น: {aiLabel} {aiSaysSell ? "✓ ตรง" : "↔ สวน"}</span>}
+                              <span className={`font-mono font-semibold ${x.realized >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{x.realized >= 0 ? "+" : ""}{money(x.realized)} ({x.realizedPct >= 0 ? "+" : ""}{x.realizedPct.toFixed(1)}%)</span>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-3">
-                            {aiLabel && <span className={`rounded-full border px-2.5 py-0.5 text-xs ${aiSaysSell ? "border-emerald-300/30 bg-emerald-400/10 text-emerald-200" : "border-amber-300/30 bg-amber-400/10 text-amber-200"}`}>AI ตอนนั้น: {aiLabel} {aiSaysSell ? "✓ ตรง" : "↔ สวน"}</span>}
-                            <span className={`font-mono font-semibold ${x.realized >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{x.realized >= 0 ? "+" : ""}{money(x.realized)} ({x.realizedPct >= 0 ? "+" : ""}{x.realizedPct.toFixed(1)}%)</span>
-                            <button onClick={() => deletePosition(x.id)} title="ลบรายการนี้" className="text-slate-600 hover:text-rose-400 transition">✕</button>
-                          </div>
+                          <LotRow key={`${x.id}-${x.price}-${x.qty}-${x.bought_at}`} lot={x} money={money} onSave={savePosition} onDelete={deletePosition} />
                         </div>
                       );
                     })}
