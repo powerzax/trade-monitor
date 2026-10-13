@@ -106,6 +106,8 @@ interface AnalysisNewsItem {
 }
 
 interface Analysis {
+  changeFromLast?: string | null;
+  odds?: { pTarget: number; pStop: number; pOpen: number; expectedPct: number; horizon: number } | null;
   oneLiner?: string;
   confidenceNote?: string;
   positionAdvice?: {
@@ -318,7 +320,28 @@ export default function Home() {
   }
   const [positions, setPositions] = useState<Position[]>([]);
   const [posQuotes, setPosQuotes] = useState<Record<string, Quote>>({});
-  const [posForm, setPosForm] = useState({ symbol: "", crypto: false, price: "", qty: "", side: "buy" as "buy" | "sell", boughtAt: new Date().toISOString().slice(0, 10) });
+  const [posForm, setPosForm] = useState({ symbol: "", crypto: false, price: "", qty: "", side: "buy" as "buy" | "sell", mode: "unit" as "unit" | "total", boughtAt: new Date().toISOString().slice(0, 10) });
+  const [formQuote, setFormQuote] = useState<{ ticker: string; price: number } | null>(null);
+
+  useEffect(() => {
+    const sym = posForm.symbol.trim().toUpperCase().replace(/-USD$/, "");
+    if (!sym) { setFormQuote(null); return; }
+    const ticker = posForm.crypto ? `${sym}-USD` : sym;
+    const t = setTimeout(() => {
+      fetch(`/api/quotes?symbols=${encodeURIComponent(ticker)}`).then((r) => r.json())
+        .then((j) => { const q = j.quotes?.[0]; setFormQuote(q ? { ticker, price: q.price } : null); })
+        .catch(() => setFormQuote(null));
+    }, 500);
+    return () => clearTimeout(t);
+  }, [posForm.symbol, posForm.crypto]);
+
+  const formUnitPrice = (() => {
+    const p = Number(posForm.price), q = Number(posForm.qty);
+    if (!(p > 0)) return null;
+    if (posForm.mode === "total") return q > 0 ? p / q : null;
+    return p;
+  })();
+  const formGap = formQuote && formUnitPrice ? ((formUnitPrice - formQuote.price) / formQuote.price) * 100 : null;
   const [holdingAdvice, setHoldingAdvice] = useState<Record<string, { action: string; actionTH: string; at: string }>>({});
   const [posError, setPosError] = useState("");
 
@@ -348,10 +371,11 @@ export default function Home() {
   async function addPosition(e: React.FormEvent) {
     e.preventDefault();
     setPosError("");
+    if (!formUnitPrice) return setPosError(posForm.mode === "total" ? "กรอกยอดเงินรวมและจำนวนให้ครบ" : "กรอกราคาให้ถูกต้อง");
     const res = await fetch("/api/positions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(posForm),
+      body: JSON.stringify({ ...posForm, price: formUnitPrice }),
     });
     const j = await res.json();
     if (j.error) return setPosError(j.error);
@@ -997,13 +1021,35 @@ export default function Home() {
                     <button type="button" onClick={() => setPosForm((f) => ({ ...f, crypto: true }))} className={`flex-1 px-3 py-1.5 rounded-lg text-sm transition ${posForm.crypto ? "bg-gradient-to-br from-amber-400 to-orange-600 text-white" : "text-slate-400"}`}>Crypto</button>
                   </div>
                   <label className="text-xs text-slate-400">ชื่อ<input value={posForm.symbol} onChange={(e) => setPosForm((f) => ({ ...f, symbol: e.target.value.toUpperCase() }))} placeholder={posForm.crypto ? "BTC" : "NVDA"} className="mt-1 w-full glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
-                  <label className="text-xs text-slate-400">{posForm.side === "buy" ? "ราคาที่ซื้อ ($)" : "ราคาที่ขาย ($)"}<input type="number" step="any" min="0" value={posForm.price} onChange={(e) => setPosForm((f) => ({ ...f, price: e.target.value }))} placeholder="0.00" className="mt-1 w-full glass rounded-xl px-3 py-2 font-mono text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
+                  <label className="text-xs text-slate-400">{posForm.mode === "total" ? (posForm.side === "buy" ? "ยอดเงินที่จ่ายรวม ($)" : "ยอดเงินที่ได้รวม ($)") : posForm.side === "buy" ? "ราคาที่ซื้อ ต่อหน่วย ($)" : "ราคาที่ขาย ต่อหน่วย ($)"}<input type="number" step="any" min="0" value={posForm.price} onChange={(e) => setPosForm((f) => ({ ...f, price: e.target.value }))} placeholder="0.00" className="mt-1 w-full glass rounded-xl px-3 py-2 font-mono text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
                   <label className="text-xs text-slate-400">จำนวน<input type="number" step="any" min="0" value={posForm.qty} onChange={(e) => setPosForm((f) => ({ ...f, qty: e.target.value }))} placeholder="0" className="mt-1 w-full glass rounded-xl px-3 py-2 font-mono text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
                   <label className="text-xs text-slate-400">{posForm.side === "buy" ? "วันที่ซื้อ" : "วันที่ขาย"}<input type="date" value={posForm.boughtAt} onChange={(e) => setPosForm((f) => ({ ...f, boughtAt: e.target.value }))} className="mt-1 w-full glass rounded-xl px-3 py-2 text-sm text-white [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-violet-500/60" /></label>
                   <button type="submit" className={`col-span-2 lg:col-span-1 rounded-xl px-5 py-2 text-sm font-medium hover:brightness-110 transition ${posForm.side === "buy" ? "glass-accent" : "bg-gradient-to-br from-rose-400 to-rose-600 shadow-lg shadow-rose-500/30"}`}>{posForm.side === "buy" ? "บันทึกซื้อ" : "บันทึกขาย"}</button>
                 </div>
-                {posForm.price && posForm.qty && Number(posForm.price) * Number(posForm.qty) > 0 && (
-                  <p className="mt-3 text-xs text-slate-400">มูลค่ารายการนี้ <span className="font-mono text-violet-200">{money(Number(posForm.price) * Number(posForm.qty))}</span></p>
+                <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+                  <div className="flex glass rounded-full p-0.5">
+                    <button type="button" onClick={() => setPosForm((f) => ({ ...f, mode: "unit" }))} className={`rounded-full px-3 py-1 transition ${posForm.mode === "unit" ? "glass-accent text-white" : "text-slate-400"}`}>กรอกราคาต่อหน่วย</button>
+                    <button type="button" onClick={() => setPosForm((f) => ({ ...f, mode: "total" }))} className={`rounded-full px-3 py-1 transition ${posForm.mode === "total" ? "glass-accent text-white" : "text-slate-400"}`}>กรอกยอดเงินรวม</button>
+                  </div>
+                  {formQuote && (
+                    <span className="text-slate-400">
+                      ราคาตลาด {formQuote.ticker.replace(/-USD$/, "")} ตอนนี้ <span className="font-mono text-slate-200">{money(formQuote.price)}</span>
+                      {posForm.mode === "unit" && <button type="button" onClick={() => setPosForm((f) => ({ ...f, price: String(formQuote.price) }))} className="ml-2 text-violet-300 underline-offset-2 hover:underline">ใช้ราคานี้</button>}
+                    </span>
+                  )}
+                </div>
+                {formUnitPrice && Number(posForm.qty) > 0 && (
+                  <p className="mt-2 text-xs text-slate-400">
+                    {posForm.mode === "total"
+                      ? <>คิดเป็นราคาต่อหน่วย <span className="font-mono text-violet-200">{money(formUnitPrice)}</span></>
+                      : <>มูลค่ารายการนี้ <span className="font-mono text-violet-200">{money(formUnitPrice * Number(posForm.qty))}</span></>}
+                  </p>
+                )}
+                {formGap != null && Math.abs(formGap) > 50 && (
+                  <div className="mt-3 rounded-xl border border-amber-300/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
+                    ⚠ ราคาต่อหน่วยที่ได้ ({money(formUnitPrice!)}) {formGap < 0 ? "ต่ำกว่า" : "สูงกว่า"}ราคาตลาด {Math.abs(formGap).toFixed(0)}%
+                    {posForm.mode === "unit" ? " คุณกรอกยอดเงินรวมหรือเปล่า? ถ้าใช่ กด \"กรอกยอดเงินรวม\" ด้านบน" : " ตรวจจำนวนหน่วยอีกครั้ง"}
+                  </div>
                 )}
                 {posError && <p className="mt-3 text-sm text-rose-300">{posError}</p>}
               </form>
@@ -1240,6 +1286,7 @@ export default function Home() {
                         {analyzing && !line ? "กำลังให้ AI สรุป..." : line ?? "ยังไม่มีผลวิเคราะห์ กดวิเคราะห์เพื่อรับคำแนะนำ"}
                       </p>
                       {analysis?.confidenceNote && <p className="mt-2 text-sm text-slate-400">💭 {analysis.confidenceNote}</p>}
+                      {analysis?.changeFromLast && <p className="mt-1 text-sm text-violet-300/90">🔁 {analysis.changeFromLast}</p>}
                       <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                         {[
                           ["จุดเข้า", analysis?.entryStrategy?.first, "text-emerald-200"],
@@ -1259,6 +1306,27 @@ export default function Home() {
                       </div>
                     </div>
                   </div>
+                  {analysis?.odds && (() => {
+                    const o = analysis.odds;
+                    return (
+                      <div className="mt-4">
+                        <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2 text-xs">
+                          <span className="text-slate-400">🎲 ถ้าเข้าตามแผน ใน {o.horizon} วันทำการ (จำลอง 2,000 แบบจากความผันผวนจริง)</span>
+                          <span className={`font-mono font-semibold ${o.expectedPct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>คาดหวัง {o.expectedPct >= 0 ? "+" : ""}{o.expectedPct}%</span>
+                        </div>
+                        <div className="flex h-3 overflow-hidden rounded-full text-[0px]">
+                          <div className="grow-x bg-emerald-400/80" style={{ width: `${o.pTarget}%` }} />
+                          <div className="bg-white/15" style={{ width: `${o.pOpen}%` }} />
+                          <div className="bg-rose-400/80" style={{ width: `${o.pStop}%` }} />
+                        </div>
+                        <div className="mt-1.5 flex flex-wrap justify-between gap-2 text-[11px]">
+                          <span className="text-emerald-300">ถึง TP1 ก่อน {o.pTarget}%</span>
+                          <span className="text-slate-400">ยังไม่ถึงทั้งคู่ {o.pOpen}%</span>
+                          <span className="text-rose-300">โดน Stop ก่อน {o.pStop}%</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                   <div className="mt-5 flex flex-wrap gap-2">
                     <button onClick={toggleDetails} className="glass rounded-full px-4 py-1.5 text-sm text-slate-200 hover:bg-violet-500/20 transition">{showDetails ? "▲ ซ่อนรายละเอียด" : "▼ ดูรายละเอียดทั้งหมด"}</button>
                     {!analyzing && <button onClick={() => analyze(data, news)} className="glass rounded-full px-4 py-1.5 text-sm text-violet-200 hover:bg-violet-500/20 transition">🔄 วิเคราะห์ใหม่</button>}

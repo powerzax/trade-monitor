@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sql, initDB } from "@/lib/db";
 import { getLatestAccuracy } from "@/lib/accuracy";
 import { getCalibration } from "@/lib/calibrate";
+import { tradeOdds } from "@/lib/odds";
 
 export async function POST(req: NextRequest) {
   const data = await req.json();
@@ -73,9 +74,46 @@ Volume Analysis:
     const fmtSig = ([k, v]: (typeof ranked)[number]) => `${k} (ถูก ${v!.hitRate}%, edge ${v!.edge > 0 ? "+" : ""}${v!.edge}%)`;
     lessons.push(`ทดสอบย้อนหลัง ${cal.samples.toLocaleString()} จุด (${cal.symbols} ตัว, ${cal.horizonDays} วันข้างหน้า): สัญญาณที่เชื่อได้มากสุด ${ranked.slice(0, 3).map(fmtSig).join(", ")} | เชื่อได้น้อยสุด ${ranked.slice(-3).map(fmtSig).join(", ")}`);
   }
+  // This symbol's own track record for chart arrows (trend flips / score crossings) over the past year.
+  const done = (data.markers ?? []).filter((m: { fwd10: number | null }) => m.fwd10 != null) as { kind: string; dir: number; fwd10: number }[];
+  for (const kind of ["trend", "score"]) {
+    const ms = done.filter((m) => m.kind === kind);
+    if (ms.length >= 3) {
+      const right = ms.filter((m) => m.dir * m.fwd10 > 0).length;
+      lessons.push(`สัญญาณ${kind === "trend" ? "เปลี่ยนเทรนด์ (Supertrend)" : "คะแนนรวมข้าม ±3"}ของตัวนี้ในรอบ 1 ปี ถูก ${right}/${ms.length} ครั้ง (${Math.round((right / ms.length) * 100)}%)${right / ms.length < 0.45 ? " → ตัวนี้สัญญาณหลอกบ่อย ลดความมั่นใจ" : right / ms.length > 0.6 ? " → สัญญาณตัวนี้ค่อนข้างเชื่อได้" : ""}`);
+    }
+  }
+
   const lessonSection = lessons.length ? `
 บทเรียนจากผลจริงที่ผ่านมา (ใช้ปรับความมั่นใจ ถ้าคำแนะนำคล้ายแบบที่เคยผิดบ่อย ให้ลดคะแนนและบอกเหตุผล):
 ${lessons.map((l) => `- ${l}`).join("\n")}` : "";
+
+  let prevSection = "";
+  try {
+    const prev = await sql`
+      SELECT created_at, result FROM analysis_cache
+      WHERE symbol = ${String(data.symbol).toUpperCase()} AND type = 'symbol'
+      ORDER BY created_at DESC LIMIT 1`;
+    if (prev.length) {
+      const r = prev[0].result as Record<string, unknown> & { targets?: { tp1?: unknown }; entryStrategy?: { first?: unknown } };
+      const days = Math.max(0, Math.round((Date.now() - new Date(prev[0].created_at).getTime()) / 86400000));
+      const why = String(r.technicalDetail ?? r.summary ?? "").slice(0, 350);
+      prevSection = `
+การวิเคราะห์ครั้งก่อนของตัวนี้ (${days === 0 ? "วันนี้" : `${days} วันก่อน`}${r.priceAtAnalysis ? `, ราคาตอนนั้น $${r.priceAtAnalysis}` : ""}):
+- แนะนำ ${r.suggestion} คะแนน ${r.score} | จุดเข้า $${r.entryStrategy?.first ?? "?"} | TP1 $${r.targets?.tp1 ?? "?"} | SL $${r.stopLoss ?? "?"}
+- สรุป: ${String(r.tldr ?? "").slice(0, 200)}
+- เหตุผล: ${why}
+ให้คำแนะนำต่อเนื่องจากครั้งก่อน ถ้าเปลี่ยนความเห็นต้องบอกว่าอะไรเปลี่ยนไป (ราคา สัญญาณ หรือข่าว) อย่ากลับไปกลับมาโดยไม่มีเหตุผล`;
+    }
+  } catch {}
+
+  const atrOdds = ind?.atr && data.projection
+    ? tradeOdds(data.price, data.price + 2 * ind.atr, data.price - 1.5 * ind.atr, data.projection.muDaily, data.projection.sigmaDaily)
+    : null;
+  const oddsSection = atrOdds ? `
+จำลองราคา 2,000 เส้นทาง 10 วันทำการ จากความผันผวนจริงของตัวนี้: ถ้าเข้าที่ราคาปัจจุบัน ตั้ง TP = +2×ATR ($${(data.price + 2 * ind.atr).toFixed(2)}) และ SL = −1.5×ATR ($${(data.price - 1.5 * ind.atr).toFixed(2)})
+→ โอกาสชน TP ก่อน ${atrOdds.pTarget}% | ชน SL ก่อน ${atrOdds.pStop}% | ยังไม่ชนทั้งคู่ ${atrOdds.pOpen}% | ผลตอบแทนคาดหวัง ${atrOdds.expectedPct}%
+ใช้ตัวเลขนี้ประกอบการให้คะแนน: ถ้าโอกาสชน TP ต่ำกว่าชน SL ไม่ควรให้คะแนนสูง` : "";
 
   const sc = data.sector;
   const sectorSection = sc ? `
@@ -118,13 +156,14 @@ Technical Indicators:
 - ราคาเทียบ MA: ${data.price > ind?.ma20 ? "เหนือ MA20 ✓" : "ใต้ MA20 ✗"} ${ind?.ma50 ? data.price > ind.ma50 ? "| เหนือ MA50 ✓" : "| ใต้ MA50 ✗" : ""} ${ind?.ma200 ? data.price > ind.ma200 ? "| เหนือ MA200 ✓ (Bull market)" : "| ใต้ MA200 ✗ (Bear market)" : ""}
 - แนวรับ (Swing Low): $${ind?.support?.map((s: number) => s.toFixed(2)).join(", ")}
 - แนวต้าน (Swing High): $${ind?.resistance?.map((r: number) => r.toFixed(2)).join(", ")}
-${volumeSection}${flowSection}${trendStrengthSection}${weeklySection}${confluenceSection}${marketSection}${sectorSection}${earningsSection}${projectionSection}${positionSection}${lessonSection}${analystSection}${fearGreedSection}${newsSection}
+${volumeSection}${flowSection}${trendStrengthSection}${weeklySection}${confluenceSection}${marketSection}${sectorSection}${earningsSection}${projectionSection}${positionSection}${prevSection}${oddsSection}${lessonSection}${analystSection}${fearGreedSection}${newsSection}
 
 วิเคราะห์ครบทุกมิติ แล้วตอบเป็น JSON เท่านั้น (ห้ามมีข้อความนอก JSON) ฟิลด์ราคาและตัวเลขทุกตัวต้องเป็น number ล้วน ห้ามใส่ $ หรือช่วงราคา:
 {
   "tldr": "สรุปสั้น 1-2 ประโยค สำหรับคนไม่อยากอ่านยาว บอกว่าตอนนี้ควรทำอะไร",
   "oneLiner": "ประโยคเดียวไม่เกิน 15 คำ ภาษาพูดง่ายๆ ว่าควรทำอะไรตอนนี้ พร้อมราคา เช่น รอให้ลงมา $226 ค่อยซื้อ",
   "confidenceNote": "1 ประโยค บอกว่ามั่นใจแค่ไหนและทำไม อ้างอิงบทเรียนจากผลที่ผ่านมาถ้ามี",
+  "changeFromLast": "1 ประโยค เทียบกับการวิเคราะห์ครั้งก่อน อะไรเปลี่ยนไปและคำแนะนำเปลี่ยนหรือไม่ (ถ้าไม่มีครั้งก่อนให้เป็น null)",
   "trend": "bullish" | "bearish" | "neutral",
   "trendTH": "ขาขึ้น" | "ขาลง" | "Sideway",
   "score": 1-10,
@@ -195,6 +234,11 @@ ${volumeSection}${flowSection}${trendStrengthSection}${weeklySection}${confluenc
     analysis.score = num(analysis.score);
     if (analysis.targets) { analysis.targets.tp1 = num(analysis.targets.tp1); analysis.targets.tp2 = num(analysis.targets.tp2); }
     analysis.priceAtAnalysis = data.price;
+    {
+      const entry = num(analysis.entryStrategy?.first) ?? data.price;
+      const tp = num(analysis.targets?.tp1), sl = num(analysis.stopLoss);
+      if (tp && sl && data.projection) analysis.odds = tradeOdds(entry, tp, sl, data.projection.muDaily, data.projection.sigmaDaily);
+    }
     if (analysis.positionAdvice) {
       analysis.positionAdvice.stopForPosition = num(analysis.positionAdvice.stopForPosition);
       analysis.positionAdvice.targetForPosition = num(analysis.positionAdvice.targetForPosition);
