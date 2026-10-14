@@ -1,5 +1,6 @@
 import { sql, initDB } from "@/lib/db";
 import { fetchChart, dayKey } from "@/lib/yahoo";
+import { SETUP_KEYS, normalizeSetup, type SetupKey } from "@/lib/setups";
 
 interface Bar { time: number; high: number; low: number; close: number }
 
@@ -7,6 +8,7 @@ interface Outcome {
   symbol: string;
   date: string;
   suggestion: string;
+  setup: SetupKey;
   score: number | null;
   entry: number;
   ret7: number | null;
@@ -32,7 +34,7 @@ async function bars(symbol: string): Promise<Bar[]> {
   }
 }
 
-function evaluate(row: { symbol: string; created_at: string; suggestion: string; score: number | null; tp1: unknown; sl: unknown; p0: unknown }, series: Bar[]): Outcome | null {
+function evaluate(row: { symbol: string; created_at: string; suggestion: string; setup: unknown; score: number | null; tp1: unknown; sl: unknown; p0: unknown }, series: Bar[]): Outcome | null {
   const t0 = new Date(row.created_at).getTime() / 1000;
   const d0 = dayKey(t0);
   const i0 = series.findLastIndex((b) => dayKey(b.time) <= d0);
@@ -63,7 +65,7 @@ function evaluate(row: { symbol: string; created_at: string; suggestion: string;
     row.suggestion === "Avoid" ? (ret == null ? null : ret < 0) :
     null;
 
-  return { symbol: row.symbol, date: d0, suggestion: row.suggestion, score: row.score, entry, ret7, ret14, hit, correct };
+  return { symbol: row.symbol, date: d0, suggestion: row.suggestion, setup: normalizeSetup(row.setup), score: row.score, entry, ret7, ret14, hit, correct };
 }
 
 function summarize(list: Outcome[]) {
@@ -87,7 +89,7 @@ export async function computeAccuracy() {
   await initDB();
   const rows = await sql`
     SELECT DISTINCT ON (symbol, (created_at AT TIME ZONE 'Asia/Bangkok')::date)
-      symbol, created_at, result->>'suggestion' AS suggestion, (result->>'score')::float AS score,
+      symbol, created_at, result->>'suggestion' AS suggestion, result->>'setup' AS setup, (result->>'score')::float AS score,
       result->'targets'->>'tp1' AS tp1, result->>'stopLoss' AS sl, result->>'priceAtAnalysis' AS p0
     FROM analysis_cache
     WHERE type = 'symbol' AND created_at > NOW() - INTERVAL '120 days' AND created_at < NOW() - INTERVAL '1 day'
@@ -117,6 +119,7 @@ export async function computeAccuracy() {
     avoid: summarize(outcomes.filter((o) => o.suggestion === "Avoid")),
     buyHighScore: summarize(buys.filter((o) => (o.score ?? 0) >= 7)),
     buyLowScore: summarize(buys.filter((o) => (o.score ?? 0) < 7)),
+    bySetup: Object.fromEntries(SETUP_KEYS.map((k) => [k, summarize(outcomes.filter((o) => o.setup === k))])) as Record<SetupKey, ReturnType<typeof summarize>>,
     recent: outcomes.slice(0, 40),
     bySymbol: Object.fromEntries([...new Set(outcomes.map((o) => o.symbol))].map((sym) => [sym, outcomes.filter((o) => o.symbol === sym).slice(0, 5)])),
   };

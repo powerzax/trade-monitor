@@ -3,6 +3,7 @@ import { sql, initDB } from "@/lib/db";
 import { getLatestAccuracy } from "@/lib/accuracy";
 import { getCalibration } from "@/lib/calibrate";
 import { tradeOdds } from "@/lib/odds";
+import { SETUPS, SETUP_KEYS, normalizeSetup } from "@/lib/setups";
 
 export async function POST(req: NextRequest) {
   const data = await req.json();
@@ -84,6 +85,16 @@ Volume Analysis:
     }
   }
 
+  if (acc?.bySetup) {
+    const enough = SETUP_KEYS.filter((k) => (acc.bySetup[k]?.evaluated ?? 0) >= 5);
+    for (const k of enough) {
+      const st = acc.bySetup[k];
+      lessons.push(`รูปแบบ ${k} (${SETUPS[k].th}): คำแนะนำถูก ${st.winRate}% จาก ${st.evaluated} ครั้ง, ผลเฉลี่ย 14 วัน ${st.avgRet14 ?? "?"}%, ชน TP1 ${st.tpHits} ครั้ง ชน SL ${st.slHits} ครั้ง`);
+    }
+    const few = SETUP_KEYS.filter((k) => !enough.includes(k));
+    if (few.length) lessons.push(`รูปแบบ ${few.join(", ")}: ข้อมูลยังน้อย (ประเมินได้ไม่ถึง 5 ครั้ง) ห้ามใช้อ้างอิงความแม่น`);
+  }
+
   const lessonSection = lessons.length ? `
 บทเรียนจากผลจริงที่ผ่านมา (ใช้ปรับความมั่นใจ ถ้าคำแนะนำคล้ายแบบที่เคยผิดบ่อย ให้ลดคะแนนและบอกเหตุผล):
 ${lessons.map((l) => `- ${l}`).join("\n")}` : "";
@@ -158,6 +169,9 @@ Technical Indicators:
 - แนวต้าน (Swing High): $${ind?.resistance?.map((r: number) => r.toFixed(2)).join(", ")}
 ${volumeSection}${flowSection}${trendStrengthSection}${weeklySection}${confluenceSection}${marketSection}${sectorSection}${earningsSection}${projectionSection}${positionSection}${prevSection}${oddsSection}${lessonSection}${analystSection}${fearGreedSection}${newsSection}
 
+รูปแบบสถานการณ์ (setup) ให้เลือก 1 แบบที่ตรงที่สุด:
+${SETUP_KEYS.map((k) => `- ${k}: ${SETUPS[k].hint}`).join("\n")}
+
 วิเคราะห์ครบทุกมิติ แล้วตอบเป็น JSON เท่านั้น (ห้ามมีข้อความนอก JSON) ฟิลด์ราคาและตัวเลขทุกตัวต้องเป็น number ล้วน ห้ามใส่ $ หรือช่วงราคา:
 {
   "tldr": "สรุปสั้น 1-2 ประโยค สำหรับคนไม่อยากอ่านยาว บอกว่าตอนนี้ควรทำอะไร",
@@ -166,6 +180,8 @@ ${volumeSection}${flowSection}${trendStrengthSection}${weeklySection}${confluenc
   "changeFromLast": "1 ประโยค เทียบกับการวิเคราะห์ครั้งก่อน อะไรเปลี่ยนไปและคำแนะนำเปลี่ยนหรือไม่ (ถ้าไม่มีครั้งก่อนให้เป็น null)",
   "trend": "bullish" | "bearish" | "neutral",
   "trendTH": "ขาขึ้น" | "ขาลง" | "Sideway",
+  "setup": ${SETUP_KEYS.map((k) => `"${k}"`).join(" | ")},
+  "setupReason": "1 ประโยคภาษาง่าย ว่าทำไมสถานการณ์ตอนนี้เป็นรูปแบบนี้",
   "score": 1-10,
   "summary": "วิเคราะห์ภาพรวม 5-6 ประโยค ครอบคลุม technical momentum + แนวรับแนวต้านสำคัญ + fundamental + analyst consensus + sentiment ตลาด + ข่าวที่กระทบ",
   "technicalDetail": "อธิบาย technical setup ละเอียด 2-3 ประโยค เช่น pattern ที่เกิด, crossover, divergence, breakout/breakdown",
@@ -234,6 +250,9 @@ ${volumeSection}${flowSection}${trendStrengthSection}${weeklySection}${confluenc
     analysis.score = num(analysis.score);
     if (analysis.targets) { analysis.targets.tp1 = num(analysis.targets.tp1); analysis.targets.tp2 = num(analysis.targets.tp2); }
     analysis.priceAtAnalysis = data.price;
+    analysis.setup = normalizeSetup(analysis.setup);
+    analysis.setupTH = SETUPS[analysis.setup as keyof typeof SETUPS].th;
+    analysis.setupReason = typeof analysis.setupReason === "string" ? analysis.setupReason.slice(0, 300) : null;
     {
       const entry = num(analysis.entryStrategy?.first) ?? data.price;
       const tp = num(analysis.targets?.tp1), sl = num(analysis.stopLoss);
