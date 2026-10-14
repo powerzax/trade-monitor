@@ -44,6 +44,21 @@ export async function initDB() {
     )
   `;
   await sql`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS symbol_profiles (
+      symbol TEXT PRIMARY KEY,
+      sector TEXT,
+      industry TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `;
+  await sql`
     CREATE INDEX IF NOT EXISTS idx_analysis_cache_symbol
     ON analysis_cache(symbol, created_at DESC)
   `;

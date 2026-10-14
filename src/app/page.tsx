@@ -11,6 +11,9 @@ import { JournalCard } from "@/components/JournalCard";
 import { SetupBadge, type SetupStat } from "@/components/SetupBadge";
 import { OddsOutOfTen } from "@/components/OddsOutOfTen";
 import { Scorecard } from "@/components/Scorecard";
+import { PositionSizer } from "@/components/PositionSizer";
+import { ConcentrationWarnings } from "@/components/ConcentrationWarnings";
+import { EarningsBanner } from "@/components/EarningsBanner";
 
 const POPULAR = [
   { symbol: "AAPL", label: "AAPL", crypto: false },
@@ -1013,6 +1016,8 @@ export default function Home() {
                 )}
               </div>
 
+              <ConcentrationWarnings items={rows.map((r) => ({ symbol: r.h.symbol, value: r.value ?? r.h.cost }))} />
+
               {/* Add position */}
               <form onSubmit={addPosition} className="card spotlight p-5">
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -1348,6 +1353,7 @@ export default function Home() {
                       </div>
                     );
                   })()}
+                  <EarningsBanner earnings={data.earnings} />
                   <div className="mt-5 flex flex-wrap gap-2">
                     <button onClick={toggleDetails} className="glass rounded-full px-4 py-1.5 text-sm text-slate-200 hover:bg-violet-500/20 transition">{showDetails ? "▲ ซ่อนรายละเอียด" : "▼ ดูรายละเอียดทั้งหมด"}</button>
                     {!analyzing && <button onClick={() => analyze(data, news)} className="glass rounded-full px-4 py-1.5 text-sm text-violet-200 hover:bg-violet-500/20 transition">🔄 วิเคราะห์ใหม่</button>}
@@ -1356,6 +1362,14 @@ export default function Home() {
                 </div>
               );
             })()}
+
+            <PositionSizer
+              symbol={data.symbol}
+              crypto={data.symbol.endsWith("-USD")}
+              entry={Number(analysis?.entryStrategy?.first) > 0 ? Number(analysis!.entryStrategy!.first) : null}
+              stop={Number(analysis?.stopLoss) > 0 ? Number(analysis!.stopLoss) : null}
+              target={Number(analysis?.targets?.tp1) > 0 ? Number(analysis!.targets!.tp1) : null}
+            />
 
             {/* Quote Header */}
             <div className="card spotlight glow-ring p-5 rounded-2xl">
