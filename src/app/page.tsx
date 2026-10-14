@@ -929,7 +929,7 @@ export default function Home() {
 
                 {overviewData.favoritesAnalysis?.length === 0 && (
                   <div className="card spotlight p-5 text-center text-slate-500 text-sm">
-                    <p>ยังไม่มี Favorites — ไปที่ "วิเคราะห์รายตัว" แล้วกด ☆ เพื่อเพิ่ม</p>
+                    <p>ยังไม่มี Favorites — ไปที่ &quot;วิเคราะห์รายตัว&quot; แล้วกด ☆ เพื่อเพิ่ม</p>
                   </div>
                 )}
               </div>
@@ -938,7 +938,7 @@ export default function Home() {
             {!overviewData && !overviewLoading && (
               <div className="text-center py-16 text-slate-600">
                 <div className="text-5xl mb-4">🌐</div>
-                <p className="text-lg text-slate-500">กด "วิเคราะห์ตอนนี้" เพื่อดูภาพรวมตลาด</p>
+                <p className="text-lg text-slate-500">กด &quot;วิเคราะห์ตอนนี้&quot; เพื่อดูภาพรวมตลาด</p>
                 <p className="text-sm mt-2 text-slate-600">AI จะวิเคราะห์ตลาด US stocks + crypto และ Favorites ของคุณ</p>
               </div>
             )}
