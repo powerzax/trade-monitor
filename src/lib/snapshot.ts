@@ -36,7 +36,8 @@ export async function takeSnapshot() {
 
 export async function getSnapshots(days = 365): Promise<Snapshot[]> {
   const rows = await sql`
-    SELECT to_char(date, 'YYYY-MM-DD') AS date, value_usd::float AS value, cost_usd::float AS cost
+    SELECT to_char(date, 'YYYY-MM-DD') AS date, value_usd::float AS value, cost_usd::float AS cost,
+           to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at
     FROM portfolio_snapshots WHERE date > CURRENT_DATE - ${days}::int ORDER BY date`;
   return rows as Snapshot[];
 }

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 const thb = (v: number) => `฿${Math.round(v).toLocaleString()}`;
 
@@ -23,20 +23,22 @@ export function PositionSizer({ entry, stop, target, crypto, symbol }: { entry: 
   const [budget, setBudget] = useState("");
   const [usdThb, setUsdThb] = useState<number | null>(null);
   const [fxError, setFxError] = useState(false);
-  const loaded = useRef(false);
+  const [ready, setReady] = useState(false);
+  const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
-    fetch("/api/settings?key=risk_budget_thb").then((r) => r.json()).then((j) => { if (j.value) setBudget(j.value); }).catch(() => {}).finally(() => { loaded.current = true; });
+    fetch("/api/settings?key=risk_budget_thb").then((r) => r.json()).then((j) => { if (j.value) setBudget(j.value); }).catch(() => {}).finally(() => setReady(true));
     fetch("/api/fx").then((r) => r.json()).then((j) => (j.usdThb ? setUsdThb(j.usdThb) : setFxError(true))).catch(() => setFxError(true));
   }, []);
 
+  // Save only what the user typed, never the value we just loaded.
   useEffect(() => {
-    if (!loaded.current) return;
+    if (!dirty) return;
     const t = setTimeout(() => {
       fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "risk_budget_thb", value: budget }) }).catch(() => {});
     }, 700);
     return () => clearTimeout(t);
-  }, [budget]);
+  }, [budget, dirty]);
 
   const sym = symbol.replace(/-USD$/, "");
   const unit = crypto ? sym : "หุ้น";
@@ -51,7 +53,7 @@ export function PositionSizer({ entry, stop, target, crypto, symbol }: { entry: 
         ยอมเสียได้ไม่เกิน
         <span className="relative">
           <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">฿</span>
-          <input type="number" inputMode="decimal" min="0" step="100" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="1000" className="w-36 glass rounded-xl py-2 pl-7 pr-3 font-mono text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" />
+          <input type="number" inputMode="decimal" min="0" step="100" value={budget} disabled={!ready} onChange={(e) => { setBudget(e.target.value); setDirty(true); }} placeholder={ready ? "1000" : "กำลังโหลด…"} className="w-36 glass disabled:opacity-50 rounded-xl py-2 pl-7 pr-3 font-mono text-white focus:outline-none focus:ring-2 focus:ring-violet-500/60" />
         </span>
         บาท
       </label>

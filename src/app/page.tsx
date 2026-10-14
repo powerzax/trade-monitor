@@ -335,6 +335,7 @@ export default function Home() {
   }
   const [positions, setPositions] = useState<Position[]>([]);
   const [posQuotes, setPosQuotes] = useState<Record<string, Quote>>({});
+  const [posQuotesFor, setPosQuotesFor] = useState("");
   const [posForm, setPosForm] = useState({ symbol: "", crypto: false, price: "", qty: "", side: "buy" as "buy" | "sell", mode: "unit" as "unit" | "total", boughtAt: new Date().toISOString().slice(0, 10) });
   const [formQuote, setFormQuote] = useState<{ ticker: string; price: number } | null>(null);
 
@@ -374,7 +375,8 @@ export default function Home() {
     fetch(`/api/quotes?symbols=${encodeURIComponent(holdingSymbols)}`)
       .then((r) => r.json())
       .then((j) => setPosQuotes(Object.fromEntries((j.quotes ?? []).map((q: Quote) => [q.ticker, q]))))
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setPosQuotesFor(holdingSymbols));
     Promise.all(holdingSymbols.split(",").map((sym) =>
       fetch(`/api/analysis-cache?symbol=${encodeURIComponent(sym)}`).then((r) => r.json()).then((j) => [sym, j.cache] as const).catch(() => [sym, null] as const)
     )).then((list) => {
@@ -744,6 +746,7 @@ export default function Home() {
             <Scorecard
               cost={holdings.reduce((a, h) => a + h.cost, 0)}
               value={holdings.every((h) => posQuotes[h.symbol]) ? holdings.reduce((a, h) => a + h.qty * posQuotes[h.symbol].price, 0) : null}
+              missingPrices={posQuotesFor === holdingSymbols ? holdings.filter((h) => !posQuotes[h.symbol]).map((h) => h.symbol.replace(/-USD$/, "")) : []}
             />
             <div className="card spotlight p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>

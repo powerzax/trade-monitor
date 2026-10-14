@@ -9,7 +9,9 @@ export async function GET() {
   const [acc, snapshots, trades] = await Promise.all([
     getLatestAccuracy(),
     getSnapshots(),
-    sql`SELECT to_char(bought_at, 'YYYY-MM-DD') AS date, (CASE WHEN side = 'sell' THEN -1 ELSE 1 END * price * qty)::float AS amount FROM positions`,
+    sql`SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at,
+               (CASE WHEN side = 'sell' THEN -1 ELSE 1 END * price * qty)::float AS amount
+        FROM positions`,
   ]);
   return NextResponse.json({
     last30: acc?.last30 ?? null,

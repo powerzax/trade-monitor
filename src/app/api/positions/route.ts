@@ -34,9 +34,12 @@ export async function GET() {
              a.created_at
       FROM analysis_cache a
       WHERE a.type = 'symbol' AND a.symbol = p.symbol
-        AND a.created_at < (p.bought_at + 1)::timestamptz
-        -- Buys only count advice from the 7 days before the purchase; sells keep their original unbounded lookup.
-        AND (p.side = 'sell' OR a.created_at >= (p.bought_at - 7)::timestamptz)
+        AND (
+          -- Sells keep their original lookup unchanged so the sold-with-AI tally stays stable.
+          (p.side = 'sell' AND a.created_at < (p.bought_at + 1)::timestamptz)
+          -- Buys: advice from the 7 Bangkok-calendar days up to and including the purchase date.
+          OR (p.side <> 'sell' AND (a.created_at AT TIME ZONE 'Asia/Bangkok')::date BETWEEN p.bought_at - 7 AND p.bought_at)
+        )
       ORDER BY a.created_at DESC LIMIT 1
     ) ai ON true
     ORDER BY p.bought_at ASC, p.id ASC

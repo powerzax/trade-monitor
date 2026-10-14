@@ -12,7 +12,7 @@ const MIN_DAYS = 14;
 const usd = (v: number) => `${v < 0 ? "-" : ""}$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const pct = (v: number) => `${v >= 0 ? "+" : ""}${v}%`;
 
-export function Scorecard({ value, cost }: { value: number | null; cost: number }) {
+export function Scorecard({ value, cost, missingPrices = [] }: { value: number | null; cost: number; missingPrices?: string[] }) {
   const [last30, setLast30] = useState<Last30 | null>(null);
   const [snap, setSnap] = useState<{ days: number; drawdownPct: number | null } | null>(null);
 
@@ -71,7 +71,11 @@ export function Scorecard({ value, cost }: { value: number | null; cost: number 
         ) : (
           <>
             <p className="mt-3 flex flex-wrap items-baseline gap-x-3">
-              <span className="font-mono text-4xl font-bold text-white">{value == null ? "…" : usd(value)}</span>
+              {value == null && missingPrices.length > 0 ? (
+                <span className="text-sm text-amber-200">ดึงราคาไม่ครบ ({missingPrices.join(", ")}) ลองรีเฟรชอีกครั้ง</span>
+              ) : (
+                <span className="font-mono text-4xl font-bold text-white">{value == null ? "…" : usd(value)}</span>
+              )}
               {pnl != null && (
                 <span className={`font-mono text-lg font-semibold ${pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
                   {pnl >= 0 ? "กำไร" : "ขาดทุน"} {usd(Math.abs(pnl))} ({pct(pnlPct!)})
