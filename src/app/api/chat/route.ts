@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { rateLimitInfo, RATE_LIMIT_MESSAGE } from "@/lib/groq";
 
 interface Msg { role: "user" | "assistant"; content: string }
 
@@ -31,7 +32,11 @@ ${JSON.stringify(context).slice(0, 12000)}`;
         messages: [{ role: "system", content: system }, ...history],
       }),
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+      const rl = await rateLimitInfo(res);
+      if (rl.limited) return NextResponse.json({ error: RATE_LIMIT_MESSAGE, rateLimited: true, retryAfter: rl.retryAfter }, { status: 429 });
+      throw new Error(await res.text());
+    }
     const j = await res.json();
     const reply = (j.choices?.[0]?.message?.content ?? "").trim();
     return NextResponse.json({ reply: reply || "ขอโทษครับ ตอบไม่ได้ ลองถามใหม่อีกครั้ง" });

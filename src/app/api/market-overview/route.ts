@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { rateLimitInfo, RATE_LIMIT_MESSAGE } from "@/lib/groq";
 import { sql, initDB } from "@/lib/db";
 import { fetchMarketRegime } from "@/lib/yahoo";
 
@@ -164,7 +165,11 @@ ${prevSection}
         messages: [{ role: "user", content: prompt }],
       }),
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+      const rl = await rateLimitInfo(res);
+      if (rl.limited) return NextResponse.json({ error: RATE_LIMIT_MESSAGE, rateLimited: true, retryAfter: rl.retryAfter }, { status: 429 });
+      throw new Error(await res.text());
+    }
     const result = await res.json();
     const text = result.choices?.[0]?.message?.content ?? "";
     const jsonMatch = text.match(/\{[\s\S]*\}/);

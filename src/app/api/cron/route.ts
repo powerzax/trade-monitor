@@ -8,11 +8,20 @@ import { takeSnapshot } from "@/lib/snapshot";
 
 export const maxDuration = 300;
 
+// One analysis is ~5-6k tokens against an 8k tokens/minute cap, so AI calls are spaced a minute apart and the
+// morning run is limited to a few symbols that fit inside the 300s function limit.
+const AI_SLOTS = 3;
+const AI_GAP_MS = 65_000;
+const DEADLINE_MS = 280_000;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
   if (secret && req.headers.get("authorization") !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  const started = Date.now();
+  let lastAiAt = 0;
   try {
     await initDB();
 
@@ -32,6 +41,7 @@ export async function GET(req: NextRequest) {
       body: JSON.stringify({ favorites }),
     });
 
+    lastAiAt = Date.now();
     if (!res.ok) throw new Error("Market overview failed");
     const analysis = await res.json();
 
@@ -46,26 +56,51 @@ export async function GET(req: NextRequest) {
     const scan = await runScan();
     await sql`INSERT INTO analysis_cache (symbol, type, result) VALUES ('SCREENER', 'screener', ${JSON.stringify(scan)}::jsonb)`;
 
-    // Re-analyse every open holding so the morning view already has hold/sell advice.
+    // Pick up to AI_SLOTS symbols: holdings whose advice is oldest (skipping any analysed in the last 20h), then
+    // top scanner picks not analysed for 7 days, which also grows the data the accuracy stats learn from.
     const posRows = await sql`SELECT id, symbol, crypto, name, price::float AS price, qty::float AS qty, side, to_char(bought_at, 'YYYY-MM-DD') AS bought_at FROM positions`;
     const { open } = computeHoldings(posRows as unknown as Position[]);
-    const holdingResults: { symbol: string; ok: boolean; action?: string }[] = [];
-    for (const h of open) {
+    const lastRows = await sql`SELECT symbol, MAX(created_at) AS at FROM analysis_cache WHERE type = 'symbol' GROUP BY symbol`;
+    const lastAt = new Map(lastRows.map((r) => [r.symbol as string, new Date(r.at).getTime()]));
+    const ageH = (sym: string) => (Date.now() - (lastAt.get(sym) ?? 0)) / 3600_000;
+
+    const queue: { symbol: string; crypto: boolean; holding?: (typeof open)[number] }[] = [];
+    for (const h of [...open].sort((a, b) => ageH(b.symbol) - ageH(a.symbol))) {
+      if (queue.length < AI_SLOTS && ageH(h.symbol) >= 20) queue.push({ symbol: h.symbol, crypto: h.crypto, holding: h });
+    }
+    const held = new Set(open.map((h) => h.symbol));
+    for (const r of scan.rows) {
+      if (queue.length >= AI_SLOTS) break;
+      if (r.score >= 2 && !held.has(r.ticker) && ageH(r.ticker) >= 24 * 7) queue.push({ symbol: r.ticker, crypto: r.crypto });
+    }
+
+    const holdingResults: { symbol: string; ok: boolean; action?: string; note?: string }[] = [];
+    for (const item of queue) {
+      const sym = item.symbol.replace(/-USD$/, "");
       try {
-        const sym = h.symbol.replace(/-USD$/, "");
         const [stock, news] = await Promise.all([
-          fetch(`${baseUrl}/api/stock?symbol=${sym}&crypto=${h.crypto}`, { headers: internal }).then((r) => r.json()),
-          fetch(`${baseUrl}/api/news?symbol=${h.symbol}`, { headers: internal }).then((r) => r.json()).catch(() => ({ items: [] })),
+          fetch(`${baseUrl}/api/stock?symbol=${sym}&crypto=${item.crypto}`, { headers: internal }).then((r) => r.json()),
+          fetch(`${baseUrl}/api/news?symbol=${item.symbol}`, { headers: internal }).then((r) => r.json()).catch(() => ({ items: [] })),
         ]);
         if (stock.error) throw new Error(stock.error);
-        const a = await fetch(`${baseUrl}/api/analyze`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...internal },
-          body: JSON.stringify({ ...stock, news: news.items ?? [], position: h }),
-        }).then((r) => r.json());
-        holdingResults.push({ symbol: h.symbol, ok: !a.error, action: a.positionAdvice?.actionTH });
-      } catch {
-        holdingResults.push({ symbol: h.symbol, ok: false });
+
+        let a: { error?: string; rateLimited?: boolean; retryAfter?: number; positionAdvice?: { actionTH?: string } } = {};
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const wait = Math.max(0, lastAiAt + AI_GAP_MS - Date.now()) + (attempt ? (a.retryAfter ?? 60) * 1000 : 0);
+          if (Date.now() - started + wait + 15_000 > DEADLINE_MS) { a = { error: "out of time" }; break; }
+          await sleep(wait);
+          a = await fetch(`${baseUrl}/api/analyze`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...internal },
+            body: JSON.stringify({ ...stock, news: news.items ?? [], position: item.holding ?? null }),
+          }).then((r) => r.json());
+          lastAiAt = Date.now();
+          if (!a.rateLimited) break;
+        }
+        holdingResults.push({ symbol: item.symbol, ok: !a.error, action: a.positionAdvice?.actionTH, note: a.error });
+        if (a.error === "out of time") break;
+      } catch (e) {
+        holdingResults.push({ symbol: item.symbol, ok: false, note: e instanceof Error ? e.message : "error" });
       }
     }
 
@@ -90,7 +125,7 @@ export async function GET(req: NextRequest) {
 
       const topScan = scan.rows.slice(0, 5).map((r) => `• ${r.ticker.replace(/-USD$/, "")} ${r.score > 0 ? "+" : ""}${r.score}/7`).join("\n");
       const holdSection = holdingResults.length
-        ? `\n\n💼 *พอร์ต*\n` + holdingResults.map((h) => `• ${h.symbol.replace(/-USD$/, "")} — ${h.action ?? (h.ok ? "วิเคราะห์แล้ว" : "ผิดพลาด")}`).join("\n")
+        ? `\n\n🤖 *วิเคราะห์เช้านี้*\n` + holdingResults.map((h) => `• ${h.symbol.replace(/-USD$/, "")} — ${h.action ?? (h.ok ? "วิเคราะห์แล้ว" : "ผิดพลาด")}`).join("\n")
         : "";
       const message = `📈 *Trade Monitor — รายงานตลาด*
 ${new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" })}
@@ -121,7 +156,7 @@ ${topScan}`;
       });
     }
 
-    return NextResponse.json({ ok: true, time: new Date().toISOString(), snapshot, scanned: scan.rows.length, holdings: holdingResults });
+    return NextResponse.json({ ok: true, time: new Date().toISOString(), seconds: Math.round((Date.now() - started) / 1000), snapshot, scanned: scan.rows.length, analysed: holdingResults });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Cron failed";
     return NextResponse.json({ error: msg }, { status: 500 });
