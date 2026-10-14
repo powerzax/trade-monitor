@@ -14,6 +14,8 @@ import { Scorecard } from "@/components/Scorecard";
 import { PositionSizer } from "@/components/PositionSizer";
 import { ConcentrationWarnings } from "@/components/ConcentrationWarnings";
 import { EarningsBanner } from "@/components/EarningsBanner";
+import { TodayActions, type HoldingPlan } from "@/components/TodayActions";
+import { PortfolioRisk } from "@/components/PortfolioRisk";
 
 const POPULAR = [
   { symbol: "AAPL", label: "AAPL", crypto: false },
@@ -359,6 +361,7 @@ export default function Home() {
   })();
   const formGap = formQuote && formUnitPrice ? ((formUnitPrice - formQuote.price) / formQuote.price) * 100 : null;
   const [holdingAdvice, setHoldingAdvice] = useState<Record<string, { action: string; actionTH: string; at: string }>>({});
+  const [holdingPlans, setHoldingPlans] = useState<Record<string, HoldingPlan>>({});
   const [posError, setPosError] = useState("");
 
   const portfolio = useMemo(() => computeHoldings(positions), [positions]);
@@ -381,8 +384,16 @@ export default function Home() {
       fetch(`/api/analysis-cache?symbol=${encodeURIComponent(sym)}`).then((r) => r.json()).then((j) => [sym, j.cache] as const).catch(() => [sym, null] as const)
     )).then((list) => {
       const out: Record<string, { action: string; actionTH: string; at: string }> = {};
-      for (const [sym, c] of list) if (c?.result?.positionAdvice) out[sym] = { action: c.result.positionAdvice.action, actionTH: c.result.positionAdvice.actionTH, at: c.createdAt };
+      const plans: Record<string, HoldingPlan> = {};
+      for (const [sym, c] of list) {
+        if (c?.result?.positionAdvice) out[sym] = { action: c.result.positionAdvice.action, actionTH: c.result.positionAdvice.actionTH, at: c.createdAt };
+        if (c?.result) {
+          const stop = Number(c.result.positionAdvice?.stopForPosition ?? c.result.stopLoss);
+          plans[sym] = { stop: stop > 0 ? stop : null, action: c.result.positionAdvice?.action ?? null, actionTH: c.result.positionAdvice?.actionTH ?? null, at: c.createdAt };
+        }
+      }
       setHoldingAdvice(out);
+      setHoldingPlans(plans);
     });
   }, [holdingSymbols]);
 
@@ -497,6 +508,7 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState("");
   const [proMode, setProMode] = useState(false);
 
   useEffect(() => {
@@ -583,6 +595,7 @@ export default function Home() {
     setHistory([]);
     setShowHistory(false);
     setChat([]);
+    setAnalyzeError("");
     try {
       const ticker = crypto ? `${sym.toUpperCase()}-USD` : sym.toUpperCase();
       const [stockRes, newsRes] = await Promise.all([
@@ -619,7 +632,7 @@ export default function Home() {
 
   async function analyze(stockData: StockData, newsItems: NewsItem[]) {
     setAnalyzing(true);
-    setAnalysisCachedAt(null);
+    setAnalyzeError("");
     try {
       const res = await fetch("/api/analyze", {
         method: "POST",
@@ -632,8 +645,11 @@ export default function Home() {
           fearGreed: stockData.fearGreed,
         }),
       });
-      const json = await res.json();
-      if (!json.error) {
+      const json = await res.json().catch(() => ({ error: "เชื่อมต่อไม่ได้ ลองใหม่อีกครั้ง" }));
+      if (json.error) {
+        setAnalyzeError(json.error);
+      } else {
+        setAnalysisCachedAt(null);
         setAnalysis(json);
         // รีโหลด history หลังวิเคราะห์ใหม่
         fetch(`/api/analysis-history?symbol=${stockData.symbol}`)
@@ -743,6 +759,13 @@ export default function Home() {
         {/* ===== MARKET OVERVIEW TAB ===== */}
         {activeTab === "overview" && (
           <div className="space-y-6">
+            <TodayActions
+              holdings={holdings}
+              prices={posPrices}
+              plans={holdingPlans}
+              scan={scan?.rows ?? []}
+              onOpen={openSymbol}
+            />
             <Scorecard
               cost={holdings.reduce((a, h) => a + h.cost, 0)}
               value={holdings.every((h) => posQuotes[h.symbol]) ? holdings.reduce((a, h) => a + h.qty * posQuotes[h.symbol].price, 0) : null}
@@ -1020,6 +1043,7 @@ export default function Home() {
               </div>
 
               <ConcentrationWarnings items={rows.map((r) => ({ symbol: r.h.symbol, value: r.value ?? r.h.cost }))} />
+              <PortfolioRisk holdings={holdings} prices={posPrices} plans={holdingPlans} onOpen={openSymbol} />
 
               {/* Add position */}
               <form onSubmit={addPosition} className="card spotlight p-5">
@@ -1357,6 +1381,7 @@ export default function Home() {
                     );
                   })()}
                   <EarningsBanner earnings={data.earnings} />
+                  {analyzeError && <p className="mt-4 rounded-xl border border-amber-300/40 bg-amber-400/10 px-4 py-2.5 text-sm text-amber-100">⏳ {analyzeError}</p>}
                   <div className="mt-5 flex flex-wrap gap-2">
                     <button onClick={toggleDetails} className="glass rounded-full px-4 py-1.5 text-sm text-slate-200 hover:bg-violet-500/20 transition">{showDetails ? "▲ ซ่อนรายละเอียด" : "▼ ดูรายละเอียดทั้งหมด"}</button>
                     {!analyzing && <button onClick={() => analyze(data, news)} className="glass rounded-full px-4 py-1.5 text-sm text-violet-200 hover:bg-violet-500/20 transition">🔄 วิเคราะห์ใหม่</button>}
@@ -1369,6 +1394,9 @@ export default function Home() {
             <PositionSizer
               symbol={data.symbol}
               crypto={data.symbol.endsWith("-USD")}
+              price={data.price}
+              held={(() => { const h = holdings.find((x) => x.symbol === data.symbol); return h ? { qty: h.qty, avgCost: h.avgCost } : null; })()}
+              portfolioValueUsd={holdings.reduce((a, h) => a + h.qty * (posQuotes[h.symbol]?.price ?? h.avgCost), 0)}
               entry={Number(analysis?.entryStrategy?.first) > 0 ? Number(analysis!.entryStrategy!.first) : null}
               stop={Number(analysis?.stopLoss) > 0 ? Number(analysis!.stopLoss) : null}
               target={Number(analysis?.targets?.tp1) > 0 ? Number(analysis!.targets!.tp1) : null}

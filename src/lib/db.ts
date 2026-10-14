@@ -58,6 +58,8 @@ export async function initDB() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
   `;
+  await sql`ALTER TABLE symbol_profiles ADD COLUMN IF NOT EXISTS earnings_date DATE`;
+  await sql`ALTER TABLE symbol_profiles ADD COLUMN IF NOT EXISTS earnings_checked_at TIMESTAMPTZ`;
   await sql`
     CREATE INDEX IF NOT EXISTS idx_analysis_cache_symbol
     ON analysis_cache(symbol, created_at DESC)
