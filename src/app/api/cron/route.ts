@@ -4,6 +4,7 @@ import { runScan } from "@/lib/screener";
 import { runCalibration } from "@/lib/calibrate";
 import { saveAccuracy } from "@/lib/accuracy";
 import { computeHoldings, type Position } from "@/lib/portfolio";
+import { takeSnapshot } from "@/lib/snapshot";
 
 export const maxDuration = 300;
 
@@ -14,6 +15,9 @@ export async function GET(req: NextRequest) {
   }
   try {
     await initDB();
+
+    // First, and isolated: a failure later in the run must not cost the day's portfolio snapshot.
+    const snapshot = await takeSnapshot().catch((e) => ({ saved: false, reason: e instanceof Error ? e.message : "error" }));
 
     // ดึง favorites จาก DB
     const favRows = await sql`SELECT symbol, crypto, name FROM favorites`;
@@ -117,7 +121,7 @@ ${topScan}`;
       });
     }
 
-    return NextResponse.json({ ok: true, time: new Date().toISOString(), scanned: scan.rows.length, holdings: holdingResults });
+    return NextResponse.json({ ok: true, time: new Date().toISOString(), snapshot, scanned: scan.rows.length, holdings: holdingResults });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Cron failed";
     return NextResponse.json({ error: msg }, { status: 500 });

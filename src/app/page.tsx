@@ -10,6 +10,7 @@ import { LotRow } from "@/components/LotRow";
 import { JournalCard } from "@/components/JournalCard";
 import { SetupBadge, type SetupStat } from "@/components/SetupBadge";
 import { OddsOutOfTen } from "@/components/OddsOutOfTen";
+import { Scorecard } from "@/components/Scorecard";
 
 const POPULAR = [
   { symbol: "AAPL", label: "AAPL", crypto: false },
@@ -737,6 +738,10 @@ export default function Home() {
         {/* ===== MARKET OVERVIEW TAB ===== */}
         {activeTab === "overview" && (
           <div className="space-y-6">
+            <Scorecard
+              cost={holdings.reduce((a, h) => a + h.cost, 0)}
+              value={holdings.every((h) => posQuotes[h.symbol]) ? holdings.reduce((a, h) => a + h.qty * posQuotes[h.symbol].price, 0) : null}
+            />
             <div className="card spotlight p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>
                 <h2 className="text-lg font-bold text-white mb-1">วิเคราะห์ภาพรวมตลาด</h2>

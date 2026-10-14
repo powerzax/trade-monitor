@@ -112,7 +112,13 @@ export async function computeAccuracy() {
     .sort((a, b) => b.date.localeCompare(a.date));
 
   const buys = outcomes.filter((o) => o.suggestion === "Buy");
+  const cutoff30 = dayKey(Date.now() / 1000 - 30 * 86400);
+  const recent30 = outcomes.filter((o) => o.date >= cutoff30);
   return {
+    last30: {
+      buy: summarize(recent30.filter((o) => o.suggestion === "Buy")),
+      bySetup: Object.fromEntries(SETUP_KEYS.map((k) => [k, summarize(recent30.filter((o) => o.setup === k))])) as Record<SetupKey, ReturnType<typeof summarize>>,
+    },
     overall: summarize(outcomes.filter((o) => o.suggestion !== "Wait")),
     buy: summarize(buys),
     wait: summarize(outcomes.filter((o) => o.suggestion === "Wait")),
