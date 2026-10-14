@@ -10,6 +10,7 @@ export interface Position {
   ai_suggestion?: string | null;
   ai_action?: string | null;
   ai_action_th?: string | null;
+  ai_at?: string | null;
 }
 
 export interface Sale extends Position {

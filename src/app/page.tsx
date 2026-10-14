@@ -7,6 +7,7 @@ import type { ProjectionPoint, PriceLine, ChartMarker } from "@/components/Candl
 import { computeHoldings, type Position } from "@/lib/portfolio";
 import { Term } from "@/components/Term";
 import { LotRow } from "@/components/LotRow";
+import { JournalCard } from "@/components/JournalCard";
 
 const POPULAR = [
   { symbol: "AAPL", label: "AAPL", crypto: false },
@@ -346,6 +347,7 @@ export default function Home() {
   const [posError, setPosError] = useState("");
 
   const portfolio = useMemo(() => computeHoldings(positions), [positions]);
+  const posPrices = useMemo(() => Object.fromEntries(Object.entries(posQuotes).map(([k, q]) => [k, q.price])), [posQuotes]);
   const holdings = portfolio.open;
 
   useEffect(() => {
@@ -1152,6 +1154,8 @@ export default function Home() {
                   </div>
                 </div>
               )}
+
+              <JournalCard positions={positions} prices={posPrices} />
             </div>
           );
         })()}

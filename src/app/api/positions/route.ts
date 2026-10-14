@@ -24,15 +24,19 @@ export async function GET() {
   const rows = await sql`
     SELECT p.id, p.symbol, p.crypto, p.name, p.price::float AS price, p.qty::float AS qty, p.side,
            to_char(p.bought_at, 'YYYY-MM-DD') AS bought_at,
-           ai.suggestion AS ai_suggestion, ai.action AS ai_action, ai.action_th AS ai_action_th
+           ai.suggestion AS ai_suggestion, ai.action AS ai_action, ai.action_th AS ai_action_th,
+           to_char(ai.created_at AT TIME ZONE 'Asia/Bangkok', 'YYYY-MM-DD') AS ai_at
     FROM positions p
     LEFT JOIN LATERAL (
       SELECT result->>'suggestion' AS suggestion,
              result->'positionAdvice'->>'action' AS action,
-             result->'positionAdvice'->>'actionTH' AS action_th
+             result->'positionAdvice'->>'actionTH' AS action_th,
+             a.created_at
       FROM analysis_cache a
-      WHERE p.side = 'sell' AND a.type = 'symbol' AND a.symbol = p.symbol
+      WHERE a.type = 'symbol' AND a.symbol = p.symbol
         AND a.created_at < (p.bought_at + 1)::timestamptz
+        -- Buys only count advice from the 7 days before the purchase; sells keep their original unbounded lookup.
+        AND (p.side = 'sell' OR a.created_at >= (p.bought_at - 7)::timestamptz)
       ORDER BY a.created_at DESC LIMIT 1
     ) ai ON true
     ORDER BY p.bought_at ASC, p.id ASC
