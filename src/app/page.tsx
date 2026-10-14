@@ -8,6 +8,8 @@ import { computeHoldings, type Position } from "@/lib/portfolio";
 import { Term } from "@/components/Term";
 import { LotRow } from "@/components/LotRow";
 import { JournalCard } from "@/components/JournalCard";
+import { SetupBadge, type SetupStat } from "@/components/SetupBadge";
+import { OddsOutOfTen } from "@/components/OddsOutOfTen";
 
 const POPULAR = [
   { symbol: "AAPL", label: "AAPL", crypto: false },
@@ -107,6 +109,9 @@ interface AnalysisNewsItem {
 }
 
 interface Analysis {
+  setup?: string | null;
+  setupTH?: string | null;
+  setupReason?: string | null;
   changeFromLast?: string | null;
   odds?: { pTarget: number; pStop: number; pOpen: number; expectedPct: number; horizon: number } | null;
   oneLiner?: string;
@@ -296,6 +301,11 @@ function fmt(v: unknown, digits = 2): string {
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"overview" | "detail" | "portfolio" | "accuracy">("overview");
   const [scan, setScan] = useState<ScanResult | null>(null);
+  const [setupStats, setSetupStats] = useState<Record<string, SetupStat> | null>(null);
+
+  useEffect(() => {
+    fetch("/api/accuracy?latest=1").then((r) => r.json()).then((j) => setSetupStats(j?.bySetup ?? null)).catch(() => {});
+  }, []);
   const [scanning, setScanning] = useState(false);
   const [accuracy, setAccuracy] = useState<AccuracyData | null>(null);
   const [accuracyLoading, setAccuracyLoading] = useState(false);
@@ -1291,6 +1301,7 @@ export default function Home() {
                       </p>
                       {analysis?.confidenceNote && <p className="mt-2 text-sm text-slate-400">💭 {analysis.confidenceNote}</p>}
                       {analysis?.changeFromLast && <p className="mt-1 text-sm text-violet-300/90">🔁 {analysis.changeFromLast}</p>}
+                      <SetupBadge setup={analysis?.setup} reason={analysis?.setupReason} stat={analysis?.setup ? setupStats?.[analysis.setup] : null} />
                       <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                         {[
                           ["จุดเข้า", analysis?.entryStrategy?.first, "text-emerald-200"],
@@ -1328,6 +1339,7 @@ export default function Home() {
                           <span className="text-slate-400">ยังไม่ถึงทั้งคู่ {o.pOpen}%</span>
                           <span className="text-rose-300">โดน Stop ก่อน {o.pStop}%</span>
                         </div>
+                        <OddsOutOfTen pTarget={o.pTarget} pStop={o.pStop} pOpen={o.pOpen} />
                       </div>
                     );
                   })()}
