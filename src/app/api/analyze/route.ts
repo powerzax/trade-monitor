@@ -6,6 +6,9 @@ import { getCalibration } from "@/lib/calibrate";
 import { tradeOdds } from "@/lib/odds";
 import { SETUPS, SETUP_KEYS, normalizeSetup } from "@/lib/setups";
 
+// A Buy must pay at least this many times what it risks; recent losses came from targets closer than stops.
+const MIN_RR = 1.5;
+
 export async function POST(req: NextRequest) {
   const data = await req.json();
   const ind = data.indicators;
@@ -38,7 +41,8 @@ Volume Analysis:
 - เงินไหล (OBV): ${ind.moneyFlow === "in" ? "ไหลเข้า" : ind.moneyFlow === "out" ? "ไหลออก" : "ทรงตัว"} | MFI: ${ind.mfi ?? "N/A"} | StochRSI: ${ind.stochRsi}
 - ความผันผวน ATR(14): $${ind.atr}/วัน (${ind.atrPct}%) ระดับ${ind.plain.volatility.level === "high" ? "สูงกว่าปกติ" : ind.plain.volatility.level === "low" ? "ต่ำกว่าปกติ" : "ปกติ"}
 - Stop loss ตามความผันผวน (ราคา − 1.5×ATR): $${ind.stopZone.upper} | โซน stop: $${ind.stopZone.lower}–$${ind.stopZone.upper}
-กฎ stop loss: ใช้ค่าตาม ATR ข้างบนเป็นหลัก ปรับให้อยู่ใต้แนวรับได้ แต่ห้ามห่างจากราคาน้อยกว่า 1×ATR ($${ind.atr}) เพราะจะโดนสะบัดหลุดง่าย` : "";
+กฎ stop loss: ใช้ค่าตาม ATR ข้างบนเป็นหลัก ปรับให้อยู่ใต้แนวรับได้ แต่ห้ามห่างจากราคาน้อยกว่า 1×ATR ($${ind.atr}) เพราะจะโดนสะบัดหลุดง่าย
+กฎความคุ้ม: ถ้าจะแนะนำ Buy ระยะจากจุดเข้าถึง TP1 ต้องไม่น้อยกว่า ${MIN_RR} เท่าของระยะจากจุดเข้าถึง stop loss ถ้าหาเป้าที่สมเหตุสมผลระดับนั้นไม่ได้ ให้แนะนำ Wait แทน (ระบบจะตรวจซ้ำและเปลี่ยนเป็น Wait อัตโนมัติ)` : "";
 
   const mk = data.market;
   const marketSection = mk ? `
@@ -268,6 +272,25 @@ ${SETUP_KEYS.map((k) => `- ${k}: ${SETUPS[k].hint}`).join("\n")}
       analysis.positionAdvice.targetForPosition = num(analysis.positionAdvice.targetForPosition);
     }
     if (analysis.entryStrategy) { analysis.entryStrategy.first = num(analysis.entryStrategy.first); analysis.entryStrategy.second = num(analysis.entryStrategy.second); }
+
+    // Server-side gate: a Buy whose reward is under MIN_RR× its risk, or whose simulated odds favour the stop,
+    // is downgraded to Wait so the call matches its own numbers.
+    {
+      const entry = num(analysis.entryStrategy?.first) ?? data.price;
+      const tp = num(analysis.targets?.tp1), sl = num(analysis.stopLoss);
+      const rr = tp != null && sl != null && entry > sl ? (tp - entry) / (entry - sl) : null;
+      if (rr != null) analysis.riskReward = Math.round(rr * 100) / 100;
+      const reasons: string[] = [];
+      if (rr != null && rr < MIN_RR) reasons.push(`เป้ากำไรได้แค่ ${rr.toFixed(1)} เท่าของที่เสียถ้าโดน Stop (ควรได้อย่างน้อย ${MIN_RR} เท่า)`);
+      if (analysis.odds && analysis.odds.pTarget < analysis.odds.pStop) reasons.push(`ผลจำลองบอกว่าโอกาสโดน Stop (${analysis.odds.pStop}%) สูงกว่าถึงเป้า (${analysis.odds.pTarget}%)`);
+      if (analysis.suggestion === "Buy" && reasons.length) {
+        analysis.gate = { from: "Buy", reasons };
+        analysis.suggestion = "Wait";
+        analysis.suggestionTH = "รอจังหวะ";
+        analysis.score = Math.min(Number(analysis.score) || 5, 5);
+        analysis.oneLiner = "รอก่อน: จังหวะนี้ได้ไม่คุ้มเสีย";
+      }
+    }
 
     // บันทึกลง DB โดยไม่ block response
     initDB().then(() =>

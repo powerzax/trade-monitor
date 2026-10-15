@@ -46,6 +46,7 @@ export function Scorecard({ value, cost, missingPrices = [] }: { value: number |
               <span className={`font-mono text-4xl font-bold ${buy.winRate! >= 55 ? "text-emerald-300" : buy.winRate! < 45 ? "text-rose-300" : "text-white"}`}>{buy.winRate}%</span>
               <span className="ml-2 text-sm text-slate-300">ของครั้งที่ AI บอกซื้อ ราคาขึ้นจริง ({buy.evaluated} ครั้ง)</span>
             </p>
+            {buy.evaluated < 20 && <p className="mt-1 text-xs text-amber-200/90">⚠ ยังวัดได้ไม่ถึง 20 ครั้ง ตัวเลขนี้ยังเชื่อไม่ได้</p>}
             {buy.avgRet14 != null && (
               <p className="mt-2 text-sm text-slate-300">
                 ถ้าซื้อตาม AI แล้วถือ 2 สัปดาห์ ได้เฉลี่ย <b className={buy.avgRet14 >= 0 ? "text-emerald-300" : "text-rose-300"}>{pct(buy.avgRet14)}</b>

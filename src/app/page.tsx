@@ -115,6 +115,7 @@ interface AnalysisNewsItem {
 }
 
 interface Analysis {
+  gate?: { from: string; reasons: string[] } | null;
   setup?: string | null;
   setupTH?: string | null;
   setupReason?: string | null;
@@ -225,6 +226,7 @@ interface ScanResult {
 }
 
 interface AccStats {
+  notFilled?: number;
   count: number;
   evaluated: number;
   winRate: number | null;
@@ -1232,8 +1234,12 @@ export default function Home() {
                   ))}
                 </div>
               )}
-              {accuracy && accuracy.overall.evaluated < 10 && (
-                <p className="mt-4 text-xs text-amber-200/80">ข้อมูลยังน้อย ({accuracy.overall.evaluated} รายการ) ตัวเลขยังเชื่อถือไม่ได้ จะแม่นขึ้นเมื่อสะสมเกิน 20–30 รายการ ซึ่ง cron 07:00 น. จะช่วยเพิ่มให้ทุกวัน</p>
+              {accuracy && accuracy.overall.evaluated < 20 && (
+                <div className="mt-4 rounded-xl border-2 border-amber-300/50 bg-amber-400/10 px-4 py-3">
+                  <p className="font-semibold text-amber-100">⚠ ตัวเลขยังเชื่อไม่ได้ (วัดผลได้แค่ {accuracy.overall.evaluated} ครั้ง)</p>
+                  <p className="mt-1 text-sm text-amber-50/80">ต้องมีอย่างน้อย 20 ครั้งถึงจะพอบอกแนวโน้มได้ และถ้าหลายครั้งเกิดในวันเดียวกัน ตลาดขึ้นลงพร้อมกันวันเดียวก็ทำให้ตัวเลขเหวี่ยงแรงได้ ระบบเก็บเพิ่มให้ทุกเช้า</p>
+                  {accuracy.buy.notFilled ? <p className="mt-1 text-xs text-amber-50/60">ไม่นับ {accuracy.buy.notFilled} ครั้งที่ราคาไม่ลงมาถึงจุดเข้าที่ AI บอก (ยังไม่ได้ซื้อจริง)</p> : null}
+                </div>
               )}
             </div>
 
@@ -1338,6 +1344,12 @@ export default function Home() {
                       </p>
                       {analysis?.confidenceNote && <p className="mt-2 text-sm text-slate-400">💭 {analysis.confidenceNote}</p>}
                       {analysis?.changeFromLast && <p className="mt-1 text-sm text-violet-300/90">🔁 {analysis.changeFromLast}</p>}
+                      {analysis?.gate && (
+                        <div className="mt-3 rounded-xl border border-amber-300/40 bg-amber-400/10 px-3 py-2.5 text-sm text-amber-100">
+                          <p className="font-medium">🛡 AI เอียงซื้อ แต่ระบบเปลี่ยนเป็น &quot;รอจังหวะ&quot; เพราะ:</p>
+                          <ul className="mt-1 space-y-0.5 text-amber-50/90">{analysis.gate.reasons.map((r) => <li key={r}>• {r}</li>)}</ul>
+                        </div>
+                      )}
                       <SetupBadge setup={analysis?.setup} reason={analysis?.setupReason} stat={analysis?.setup ? setupStats?.[analysis.setup] : null} />
                       <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                         {[

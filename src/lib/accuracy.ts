@@ -15,7 +15,13 @@ interface Outcome {
   ret14: number | null;
   hit: "tp" | "sl" | null;
   correct: boolean | null;
+  filled: boolean;
 }
+
+// A Buy whose entry sits more than this below the price at analysis is a "buy on the dip" plan: it only counts
+// once price actually trades down to the entry within FILL_DAYS sessions, and it's measured from there.
+const DIP_ENTRY_PCT = 0.5;
+const FILL_DAYS = 5;
 
 const num = (v: unknown) => {
   const n = Number(v);
@@ -34,13 +40,31 @@ async function bars(symbol: string): Promise<Bar[]> {
   }
 }
 
-function evaluate(row: { symbol: string; created_at: string; suggestion: string; setup: unknown; score: number | null; tp1: unknown; sl: unknown; p0: unknown }, series: Bar[]): Outcome | null {
-  const t0 = new Date(row.created_at).getTime() / 1000;
+function evaluate(row: { symbol: string; created_at: string; suggestion: string; setup: unknown; score: number | null; tp1: unknown; sl: unknown; p0: unknown; e1: unknown }, series: Bar[]): Outcome | null {
+  let t0 = new Date(row.created_at).getTime() / 1000;
   const d0 = dayKey(t0);
   const i0 = series.findLastIndex((b) => dayKey(b.time) <= d0);
   if (i0 < 0) return null;
-  const entry = num(row.p0) ?? series[i0].close;
-  const after = series.slice(i0 + 1);
+  const p0 = num(row.p0) ?? series[i0].close;
+  const planned = num(row.e1);
+  let entry = p0;
+  let after = series.slice(i0 + 1);
+
+  if (row.suggestion === "Buy" && planned != null && planned < p0 * (1 - DIP_ENTRY_PCT / 100)) {
+    const window = after.slice(0, FILL_DAYS);
+    const k = window.findIndex((b) => b.low <= planned);
+    if (k < 0) {
+      const waited = window.length >= FILL_DAYS;
+      return {
+        symbol: row.symbol, date: d0, suggestion: row.suggestion, setup: normalizeSetup(row.setup), score: row.score,
+        // Still inside the fill window is pending, not a miss, so only a full wait counts as "not filled".
+        entry: planned, ret7: null, ret14: null, hit: null, correct: null, filled: !waited,
+      };
+    }
+    entry = planned;
+    t0 = window[k].time;
+    after = after.slice(k + 1);
+  }
 
   const retAt = (days: number) => {
     const limit = t0 + days * 86400;
@@ -65,7 +89,7 @@ function evaluate(row: { symbol: string; created_at: string; suggestion: string;
     row.suggestion === "Avoid" ? (ret == null ? null : ret < 0) :
     null;
 
-  return { symbol: row.symbol, date: d0, suggestion: row.suggestion, setup: normalizeSetup(row.setup), score: row.score, entry, ret7, ret14, hit, correct };
+  return { symbol: row.symbol, date: d0, suggestion: row.suggestion, setup: normalizeSetup(row.setup), score: row.score, entry, ret7, ret14, hit, correct, filled: true };
 }
 
 function summarize(list: Outcome[]) {
@@ -82,6 +106,7 @@ function summarize(list: Outcome[]) {
     avgRet14: avg(list.map((o) => o.ret14)),
     tpHits: list.filter((o) => o.hit === "tp").length,
     slHits: list.filter((o) => o.hit === "sl").length,
+    notFilled: list.filter((o) => !o.filled).length,
   };
 }
 
@@ -90,7 +115,8 @@ export async function computeAccuracy() {
   const rows = await sql`
     SELECT DISTINCT ON (symbol, (created_at AT TIME ZONE 'Asia/Bangkok')::date)
       symbol, created_at, result->>'suggestion' AS suggestion, result->>'setup' AS setup, (result->>'score')::float AS score,
-      result->'targets'->>'tp1' AS tp1, result->>'stopLoss' AS sl, result->>'priceAtAnalysis' AS p0
+      result->'targets'->>'tp1' AS tp1, result->>'stopLoss' AS sl, result->>'priceAtAnalysis' AS p0,
+      result->'entryStrategy'->>'first' AS e1
     FROM analysis_cache
     WHERE type = 'symbol' AND created_at > NOW() - INTERVAL '120 days' AND created_at < NOW() - INTERVAL '1 day'
     ORDER BY symbol, (created_at AT TIME ZONE 'Asia/Bangkok')::date, created_at DESC
