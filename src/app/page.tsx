@@ -16,6 +16,7 @@ import { ConcentrationWarnings } from "@/components/ConcentrationWarnings";
 import { EarningsBanner } from "@/components/EarningsBanner";
 import { TodayActions, type HoldingPlan } from "@/components/TodayActions";
 import { PortfolioRisk } from "@/components/PortfolioRisk";
+import { BacktestCard } from "@/components/BacktestCard";
 
 const POPULAR = [
   { symbol: "AAPL", label: "AAPL", crypto: false },
@@ -1242,6 +1243,8 @@ export default function Home() {
                 </div>
               )}
             </div>
+
+            <BacktestCard />
 
             {accuracy && accuracy.recent.length > 0 && (
               <div className="card spotlight p-5">

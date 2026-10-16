@@ -4,6 +4,7 @@ import { sql, initDB } from "@/lib/db";
 import { getLatestAccuracy } from "@/lib/accuracy";
 import { getCalibration } from "@/lib/calibrate";
 import { tradeOdds } from "@/lib/odds";
+import { getTradeBacktest } from "@/lib/tradeBacktest";
 import { SETUPS, SETUP_KEYS, normalizeSetup } from "@/lib/setups";
 
 // A Buy must pay at least this many times what it risks; recent losses came from targets closer than stops.
@@ -35,13 +36,15 @@ Volume Analysis:
 - Volume Pattern: ${ind.volumePattern === "bullish" ? "Bullish (ราคาขึ้น+volume สูง)" : ind.volumePattern === "bearish" ? "Bearish (ราคาลง+volume สูง)" : "Neutral/Weak"}
 - Avg Volume 20d: ${ind.avgVolume20d?.toLocaleString() ?? "N/A"}` : "";
 
+  const bt = await getTradeBacktest();
+  const stopAtr = Number(data.stopAtr) > 0 ? Number(data.stopAtr) : bt?.best?.stopAtr ?? 1.5;
   const flowSection = ind?.plain ? `
 ทิศทาง/เงินทุน/จังหวะ:
 - Supertrend: ${ind.supertrend.dir === 1 ? "ขาขึ้น" : "ขาลง"} ต่อเนื่อง ${ind.supertrend.days} วัน (เส้นอยู่ที่ $${ind.supertrend.line})
 - เงินไหล (OBV): ${ind.moneyFlow === "in" ? "ไหลเข้า" : ind.moneyFlow === "out" ? "ไหลออก" : "ทรงตัว"} | MFI: ${ind.mfi ?? "N/A"} | StochRSI: ${ind.stochRsi}
 - ความผันผวน ATR(14): $${ind.atr}/วัน (${ind.atrPct}%) ระดับ${ind.plain.volatility.level === "high" ? "สูงกว่าปกติ" : ind.plain.volatility.level === "low" ? "ต่ำกว่าปกติ" : "ปกติ"}
-- Stop loss ตามความผันผวน (ราคา − 1.5×ATR): $${ind.stopZone.upper} | โซน stop: $${ind.stopZone.lower}–$${ind.stopZone.upper}
-กฎ stop loss: ใช้ค่าตาม ATR ข้างบนเป็นหลัก ปรับให้อยู่ใต้แนวรับได้ แต่ห้ามห่างจากราคาน้อยกว่า 1×ATR ($${ind.atr}) เพราะจะโดนสะบัดหลุดง่าย
+- Stop loss ตามความผันผวน (ราคา − ${stopAtr}×ATR): $${ind.stopZone.upper}
+กฎ stop loss: ใช้ค่าข้างบนเป็นหลัก (ระยะ ${stopAtr}×ATR ได้ผลดีที่สุดจากการทดสอบการเทรดย้อนหลัง 2 ปี stop ที่แคบกว่านี้โดนสะบัดหลุดบ่อย) ปรับให้อยู่ใต้แนวรับได้ แต่ห้ามห่างจากราคาน้อยกว่า ${Math.max(1, stopAtr - 0.5)}×ATR ($${(Math.max(1, stopAtr - 0.5) * ind.atr).toFixed(2)})
 กฎความคุ้ม: ถ้าจะแนะนำ Buy ระยะจากจุดเข้าถึง TP1 ต้องไม่น้อยกว่า ${MIN_RR} เท่าของระยะจากจุดเข้าถึง stop loss ถ้าหาเป้าที่สมเหตุสมผลระดับนั้นไม่ได้ ให้แนะนำ Wait แทน (ระบบจะตรวจซ้ำและเปลี่ยนเป็น Wait อัตโนมัติ)` : "";
 
   const mk = data.market;
@@ -124,10 +127,10 @@ ${lessons.map((l) => `- ${l}`).join("\n")}` : "";
   } catch {}
 
   const atrOdds = ind?.atr && data.projection
-    ? tradeOdds(data.price, data.price + 2 * ind.atr, data.price - 1.5 * ind.atr, data.projection.muDaily, data.projection.sigmaDaily)
+    ? tradeOdds(data.price, data.price + MIN_RR * stopAtr * ind.atr, data.price - stopAtr * ind.atr, data.projection.muDaily, data.projection.sigmaDaily)
     : null;
   const oddsSection = atrOdds ? `
-จำลองราคา 2,000 เส้นทาง 10 วันทำการ จากความผันผวนจริงของตัวนี้: ถ้าเข้าที่ราคาปัจจุบัน ตั้ง TP = +2×ATR ($${(data.price + 2 * ind.atr).toFixed(2)}) และ SL = −1.5×ATR ($${(data.price - 1.5 * ind.atr).toFixed(2)})
+จำลองราคา 2,000 เส้นทาง 10 วันทำการ จากความผันผวนจริงของตัวนี้: ถ้าเข้าที่ราคาปัจจุบัน ตั้ง TP = +${MIN_RR * stopAtr}×ATR ($${(data.price + MIN_RR * stopAtr * ind.atr).toFixed(2)}) และ SL = −${stopAtr}×ATR ($${(data.price - stopAtr * ind.atr).toFixed(2)})
 → โอกาสชน TP ก่อน ${atrOdds.pTarget}% | ชน SL ก่อน ${atrOdds.pStop}% | ยังไม่ชนทั้งคู่ ${atrOdds.pOpen}% | ผลตอบแทนคาดหวัง ${atrOdds.expectedPct}%
 ใช้ตัวเลขนี้ประกอบการให้คะแนน: ถ้าโอกาสชน TP ต่ำกว่าชน SL ไม่ควรให้คะแนนสูง` : "";
 
@@ -282,6 +285,13 @@ ${SETUP_KEYS.map((k) => `- ${k}: ${SETUPS[k].hint}`).join("\n")}
       if (rr != null) analysis.riskReward = Math.round(rr * 100) / 100;
       const reasons: string[] = [];
       if (rr != null && rr < MIN_RR) reasons.push(`เป้ากำไรได้แค่ ${rr.toFixed(1)} เท่าของที่เสียถ้าโดน Stop (ควรได้อย่างน้อย ${MIN_RR} เท่า)`);
+      const best = bt?.best;
+      if (best) {
+        const score = ind?.confluence?.score;
+        if (score != null && score < best.minScore) reasons.push(`คะแนนรวมทางเทคนิค ${score} ต่ำกว่า +${best.minScore} ที่ทดสอบย้อนหลังแล้วคุ้มซื้อ`);
+        if (best.regime === "spy_ma50" && data.market?.spy && !data.market.spy.aboveMa50) reasons.push("ตลาดรวม (S&P 500) อยู่ใต้เส้นเฉลี่ย 50 วัน ช่วงแบบนี้ซื้อแล้วได้ผลแย่กว่าในการทดสอบย้อนหลัง");
+        if (best.regime === "spy_ma20" && data.market?.spy && !data.market.spy.aboveMa20) reasons.push("ตลาดรวม (S&P 500) อยู่ใต้เส้นเฉลี่ย 20 วัน");
+      }
       if (analysis.odds && analysis.odds.pTarget < analysis.odds.pStop) reasons.push(`ผลจำลองบอกว่าโอกาสโดน Stop (${analysis.odds.pStop}%) สูงกว่าถึงเป้า (${analysis.odds.pTarget}%)`);
       if (analysis.suggestion === "Buy" && reasons.length) {
         analysis.gate = { from: "Buy", reasons };

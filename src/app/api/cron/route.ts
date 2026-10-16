@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sql, initDB } from "@/lib/db";
 import { runScan } from "@/lib/screener";
 import { runCalibration } from "@/lib/calibrate";
+import { saveTradeBacktest } from "@/lib/tradeBacktest";
 import { saveAccuracy } from "@/lib/accuracy";
 import { computeHoldings, type Position } from "@/lib/portfolio";
 import { takeSnapshot } from "@/lib/snapshot";
@@ -49,6 +50,11 @@ export async function GET(req: NextRequest) {
     if (!lastCal.length || Date.now() - new Date(lastCal[0].created_at).getTime() > 7 * 86400_000) {
       const cal = await runCalibration();
       await sql`INSERT INTO analysis_cache (symbol, type, result) VALUES ('WEIGHTS', 'weights', ${JSON.stringify(cal)}::jsonb)`;
+    }
+    // Weekly trade simulation (uses the fresh weights above) that picks the stop distance and Buy filters.
+    const lastBt = await sql`SELECT created_at FROM analysis_cache WHERE type = 'trade_backtest' ORDER BY created_at DESC LIMIT 1`;
+    if (!lastBt.length || Date.now() - new Date(lastBt[0].created_at).getTime() > 7 * 86400_000) {
+      await saveTradeBacktest().catch(() => null);
     }
 
     await saveAccuracy().catch(() => null);

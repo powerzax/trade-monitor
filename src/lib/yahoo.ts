@@ -63,6 +63,7 @@ export interface IndexState {
   changePct: number;
   perf20d: number;
   aboveMa50: boolean;
+  aboveMa20: boolean;
 }
 
 export interface MarketRegime {
@@ -84,6 +85,7 @@ function indexState(symbol: string, pts: { close: number }[]): IndexState | null
     changePct: Math.round(((c[n - 1] - c[n - 2]) / c[n - 2]) * 10000) / 100,
     perf20d: Math.round(((c[n - 1] - c[n - 21]) / c[n - 21]) * 1000) / 10,
     aboveMa50: c[n - 1] > ma50,
+    aboveMa20: c[n - 1] > c.slice(-20).reduce((a, b) => a + b, 0) / 20,
   };
 }
 

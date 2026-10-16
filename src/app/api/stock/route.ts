@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchChart, fetchQuoteSummary, fetchMarketRegime, dayKey, parseCloses } from "@/lib/yahoo";
 import { computeIndicators, computeProjection, computeSupertrend } from "@/lib/indicators";
 import { getCalibration } from "@/lib/calibrate";
+import { getTradeBacktest } from "@/lib/tradeBacktest";
 
 async function fetchYahoo(ticker: string, interval = "1d", days = 180) {
   return fetchChart(ticker, interval, days);
@@ -123,6 +124,13 @@ export async function GET(req: NextRequest) {
     const weeklyVolumes = weeklyCandles.map((c) => c.volume as number);
 
     const indicators = computeIndicators(closes, highs, lows, volumes, weeklyCloses, weeklyVolumes, calibration?.weights);
+    // Size the stop zone with the stop distance that tested best on two years of trades (default 1.5×ATR).
+    const stopAtr = (await getTradeBacktest())?.best?.stopAtr ?? 1.5;
+    if (indicators?.atr) {
+      const last = closes[closes.length - 1];
+      indicators.stopZone = { upper: Math.round((last - stopAtr * indicators.atr) * 100) / 100, lower: Math.round((last - (stopAtr + 1) * indicators.atr) * 100) / 100 };
+      indicators.plain.volatility.stopDistance = Math.round(stopAtr * indicators.atr * 100) / 100;
+    }
 
     const high52w = meta.fiftyTwoWeekHigh ?? Math.max(...closes);
     const low52w = meta.fiftyTwoWeekLow ?? Math.min(...closes);
@@ -215,6 +223,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       beta,
+      stopAtr,
       earnings,
       sector,
       supertrend,
