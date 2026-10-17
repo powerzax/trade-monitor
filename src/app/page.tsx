@@ -512,6 +512,7 @@ export default function Home() {
   const [showHistory, setShowHistory] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [analyzeError, setAnalyzeError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   const [proMode, setProMode] = useState(false);
 
   useEffect(() => {
@@ -715,6 +716,13 @@ export default function Home() {
               <p className="hidden text-xs text-slate-500 sm:block">US Stocks & Crypto · Swing Trade Analysis</p>
             </div>
           </div>
+          <button
+            onClick={() => { setRefreshing(true); window.location.reload(); }}
+            aria-label="โหลดข้อมูลใหม่"
+            className="sm:hidden glass grid h-10 w-10 place-items-center rounded-full text-lg text-slate-200 transition active:scale-90"
+          >
+            <span className={refreshing ? "animate-spin" : ""}>↻</span>
+          </button>
           <div className="hidden sm:flex glass backdrop-blur-lg rounded-xl p-1 gap-1">
             <button
               onClick={() => setActiveTab("overview")}
